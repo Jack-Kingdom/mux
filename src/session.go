@@ -158,11 +158,6 @@ func (session *Session) recvLoop() {
 					return
 				}
 				_ = stream.Close()
-
-				if err = session.unregisterStream(stream); err != nil {
-					session.CloseWithErr(err)
-					return
-				}
 			case cmdNOP:
 				// todo 心跳包检测
 			}
@@ -227,11 +222,10 @@ func (session *Session) unregisterStream(stream *Stream) error {
 	session.streamMutex.Lock()
 	defer session.streamMutex.Unlock()
 
-	if _, ok := session.streams[stream.id]; !ok {
-		return StreamIdNotFoundErr
+	if _, ok := session.streams[stream.id]; ok {
+		delete(session.streams, stream.id)
 	}
 
-	delete(session.streams, stream.id)
 	return nil
 }
 

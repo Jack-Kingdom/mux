@@ -75,5 +75,6 @@ func (stream *Stream) IsClose() bool {
 
 func (stream *Stream) Close() error {
 	stream.cancel()
+	_ = stream.session.unregisterStream(stream)
 	return nil
 }
