@@ -152,12 +152,11 @@ func (session *Session) recvLoop() {
 					return
 				}
 			case cmdFIN:
-				stream, ok := session.streams[frame.streamId]
-				if !ok {
-					session.CloseWithErr(StreamNotFoundErr)
-					return
+				if stream, err := session.getStream(frame.streamId); err != nil {
+					session.CloseWithErr(err)
+				}else {
+					_ = stream.Close()
 				}
-				_ = stream.Close()
 			case cmdNOP:
 				// todo 心跳包检测
 			}
