@@ -154,7 +154,7 @@ func (session *Session) recvLoop() {
 					case <-session.ctx.Done():
 					case session.readyWriteChan <- NewFrame(cmdFIN, frame.streamId, nil):
 					}
-					return
+					continue
 				}
 
 				select {
@@ -167,7 +167,7 @@ func (session *Session) recvLoop() {
 				stream, err := session.getStream(frame.streamId)
 				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
 					// 这个 stream 可能已经被关闭了,直接返回就可以了
-					return
+					continue
 				}
 				_ = stream.Close()
 			case cmdNOP:
