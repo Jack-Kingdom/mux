@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 	"io"
 	"sync"
 )
@@ -111,6 +112,10 @@ func (session *Session) recvLoop() {
 	buffer := GetBuffer()
 	defer PutBuffer(buffer)
 
+	defer func() {
+		zap.L().Debug("mux recvLoop closed")
+	}()
+
 	for {
 		select {
 		case <-session.ctx.Done():
@@ -144,6 +149,7 @@ func (session *Session) recvLoop() {
 				stream, err := session.getStream(frame.streamId)
 				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
 					// 此处没有拿到 stream，可能被关闭了，此时通知远程进行关闭
+					// 注意这个地方可能会重复发多个包
 					select {
 					case <-session.ctx.Done():
 					case session.readyWriteChan <- NewFrame(cmdFIN, frame.streamId, nil):
@@ -174,6 +180,10 @@ func (session *Session) recvLoop() {
 func (session *Session) sendLoop() {
 	buffer := GetBuffer()
 	defer PutBuffer(buffer)
+
+	defer func() {
+		zap.L().Debug("mux sendLoop closed")
+	}()
 
 	for {
 		select {
