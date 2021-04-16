@@ -141,22 +141,29 @@ func (session *Session) recvLoop() {
 					}
 				}
 			case cmdPSH:
-				if stream, err := session.getStream(frame.streamId); err == nil {
+				stream, err := session.getStream(frame.streamId)
+				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
+					// 此处没有拿到 stream，可能被关闭了，此时通知远程进行关闭
 					select {
 					case <-session.ctx.Done():
-					case <-stream.ctx.Done():
-					case stream.readyReadChan <- frame:
+					case session.readyWriteChan <- NewFrame(cmdFIN, frame.streamId, nil):
 					}
-				} else {
-					session.CloseWithErr(StreamNotFoundErr)
 					return
 				}
-			case cmdFIN:
-				if stream, err := session.getStream(frame.streamId); err != nil {
-					session.CloseWithErr(err)
-				}else {
-					_ = stream.Close()
+
+				select {
+				case <-session.ctx.Done():
+				case <-stream.ctx.Done():
+				case stream.readyReadChan <- frame:
 				}
+
+			case cmdFIN:
+				stream, err := session.getStream(frame.streamId)
+				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
+					// 这个 stream 可能已经被关闭了,直接返回就可以了
+					return
+				}
+				_ = stream.Close()
 			case cmdNOP:
 				// todo 心跳包检测
 			}
