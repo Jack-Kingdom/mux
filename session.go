@@ -161,6 +161,12 @@ func (session *Session) recvLoop() {
 				case <-session.ctx.Done():
 				case <-stream.ctx.Done():
 				case stream.readyReadChan <- frame:
+					// 这里需要等待 frame 被消耗掉
+					select {
+					case <-session.ctx.Done():
+					case <-stream.ctx.Done():
+					case <-frame.ctx.Done():
+					}
 				}
 
 			case cmdFIN:
