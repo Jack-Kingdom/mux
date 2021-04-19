@@ -6,12 +6,13 @@ import (
 	"go.uber.org/zap"
 	"io"
 	"sync"
+	"time"
 )
 
 var (
 	ConnReadWriteOpsErr = errors.New("conn read write ops err")
-	StreamNotFoundErr   = errors.New("stream not found")
 	SessionClosedErr    = errors.New("session closed")
+	SessionTTLExceed    = errors.New("session ttl exceed")
 	StreamIdDupErr      = errors.New("stream id duplicated err")
 	StreamIdNotFoundErr = errors.New("stream id not found")
 )
@@ -27,6 +28,14 @@ type SessionConfig struct {
 	keepAliveSwitch   bool
 	keepAliveInterval uint8
 	keepAliveTTL      uint8
+}
+
+func getDefaultSessionConfig() *SessionConfig {
+	return &SessionConfig{
+		keepAliveSwitch:   true,
+		keepAliveInterval: 30,
+		keepAliveTTL:      60,
+	}
 }
 
 type Session struct {
@@ -52,6 +61,11 @@ type Session struct {
 func NewSession(conn io.ReadWriteCloser, role roleType, configPtr *SessionConfig) *Session {
 
 	ctx, cancel := context.WithCancel(context.TODO())
+
+	if configPtr == nil {
+		configPtr = getDefaultSessionConfig()
+	}
+
 	session := &Session{
 		conn:            conn,
 		streams:         make(map[uint32]*Stream, 256),
@@ -116,9 +130,20 @@ func (session *Session) recvLoop() {
 		zap.L().Debug("mux recvLoop closed")
 	}()
 
+	ttl := 30 * 24 * time.Hour // 这里先假设一个很长的时间
+	if session.config != nil && session.config.keepAliveSwitch {
+		ttl = time.Duration(session.config.keepAliveTTL) * time.Second
+	}
+
+	ttlTicker := time.NewTicker(ttl)
+	defer ttlTicker.Stop()
+
 	for {
 		select {
 		case <-session.ctx.Done():
+			return
+		case <-ttlTicker.C:
+			session.CloseWithErr(SessionTTLExceed)
 			return
 		default:
 			n, err := session.conn.Read(buffer)
@@ -177,7 +202,7 @@ func (session *Session) recvLoop() {
 				}
 				_ = stream.Close()
 			case cmdNOP:
-				// todo 心跳包检测
+				ttlTicker.Reset(ttl)
 			}
 		}
 	}
@@ -213,8 +238,22 @@ func (session *Session) sendLoop() {
 	}
 }
 
+// 持续地发送心跳包
 func (session *Session) heartBeatLoop() {
-	// todo
+	if session.config != nil && session.config.keepAliveSwitch {
+		ticker := time.NewTicker(time.Duration(session.config.keepAliveInterval) * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-session.ctx.Done():
+				return
+			case <-ticker.C:
+				frame := NewFrame(cmdNOP, 0, nil)
+				session.readyWriteChan <- frame
+			}
+		}
+	}
+
 }
 
 func (session *Session) getStream(streamId uint32) (*Stream, error) {
