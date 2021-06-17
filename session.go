@@ -28,6 +28,7 @@ type SessionConfig struct {
 	keepAliveSwitch   bool
 	keepAliveInterval uint8
 	keepAliveTTL      uint8
+	bufferSize        uint
 }
 
 func getDefaultSessionConfig() *SessionConfig {
@@ -35,6 +36,7 @@ func getDefaultSessionConfig() *SessionConfig {
 		keepAliveSwitch:   true,
 		keepAliveInterval: 30,
 		keepAliveTTL:      60,
+		bufferSize:        64 * 1024,
 	}
 }
 
@@ -49,6 +51,7 @@ type Session struct {
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
+	bufferPool      *sync.Pool  // session buffer pool
 
 	err    error // current err
 	ctx    context.Context
@@ -74,6 +77,7 @@ func NewSession(conn io.ReadWriteCloser, role roleType, configPtr *SessionConfig
 		streamIdMutex:   new(sync.Mutex),
 		readyWriteChan:  make(chan *Frame),
 		readyAcceptChan: make(chan *Frame),
+		bufferPool:      &sync.Pool{New: func() interface{} { return make([]byte, configPtr.bufferSize) }},
 		err:             nil,
 		ctx:             ctx,
 		cancel:          cancel,
@@ -103,6 +107,14 @@ func (session *Session) genStreamId() uint32 {
 	return current
 }
 
+func (session *Session) getBuffer() []byte {
+	return session.bufferPool.Get().([]byte)
+}
+
+func (session *Session) PutBuffer(buffer []byte) {
+	session.bufferPool.Put(buffer)
+}
+
 func (session *Session) IsClose() bool {
 	select {
 	case <-session.ctx.Done():
@@ -123,12 +135,8 @@ func (session *Session) CloseWithErr(err error) {
 }
 
 func (session *Session) recvLoop() {
-	buffer := GetBuffer()
-	defer PutBuffer(buffer)
-
-	defer func() {
-		zap.L().Debug("mux recvLoop closed")
-	}()
+	buffer := session.getBuffer()
+	defer session.PutBuffer(buffer)
 
 	ttl := 30 * 24 * time.Hour // 这里先假设一个很长的时间
 	if session.config != nil && session.config.keepAliveSwitch {
@@ -209,8 +217,8 @@ func (session *Session) recvLoop() {
 }
 
 func (session *Session) sendLoop() {
-	buffer := GetBuffer()
-	defer PutBuffer(buffer)
+	buffer := session.getBuffer()
+	defer session.PutBuffer(buffer)
 
 	defer func() {
 		zap.L().Debug("mux sendLoop closed")
