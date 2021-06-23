@@ -34,8 +34,8 @@ type SessionConfig struct {
 func getDefaultSessionConfig() *SessionConfig {
 	return &SessionConfig{
 		keepAliveSwitch:   true,
-		keepAliveInterval: 30,
-		keepAliveTTL:      60,
+		keepAliveInterval: 15,
+		keepAliveTTL:      30,
 		bufferSize:        64 * 1024,
 	}
 }
