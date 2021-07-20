@@ -210,6 +210,7 @@ func (session *Session) recvLoop() {
 				}
 				_ = stream.Close()
 			case cmdNOP:
+				zap.L().Debug("ttl pkg received")
 				ttlTicker.Reset(ttl)
 			}
 		}
@@ -258,6 +259,7 @@ func (session *Session) heartBeatLoop() {
 			case <-ticker.C:
 				frame := NewFrame(cmdNOP, 0, nil)
 				session.readyWriteChan <- frame
+				zap.L().Debug("ttl pkg sent")
 			}
 		}
 	}
