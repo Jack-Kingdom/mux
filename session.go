@@ -43,8 +43,9 @@ func getDefaultSessionConfig() *SessionConfig {
 type Session struct {
 	conn io.ReadWriteCloser
 
-	streams     map[uint32]*Stream
-	streamMutex *sync.Mutex
+	streams        map[uint32]*Stream
+	streamsCounter int // flag current active stream
+	streamMutex    *sync.Mutex
 
 	streamIdCounter uint32
 	streamIdMutex   *sync.Mutex
@@ -91,6 +92,10 @@ func NewSession(conn io.ReadWriteCloser, role roleType, configPtr *SessionConfig
 	go session.heartBeatLoop()
 
 	return session
+}
+
+func (session *Session) StreamsCounter() int {
+	return session.streamsCounter
 }
 
 /*
@@ -283,6 +288,7 @@ func (session *Session) registerStream(stream *Stream) error {
 		return StreamIdDupErr
 	}
 
+	session.streamsCounter += 1
 	session.streams[stream.id] = stream
 	return nil
 }
@@ -292,6 +298,7 @@ func (session *Session) unregisterStream(stream *Stream) error {
 	defer session.streamMutex.Unlock()
 
 	if _, ok := session.streams[stream.id]; ok {
+		session.streamsCounter -= 1
 		delete(session.streams, stream.id)
 	}
 
