@@ -13,7 +13,6 @@ var (
 	ConnReadWriteOpsErr = errors.New("conn read write ops err")
 	SessionClosedErr    = errors.New("session closed")
 	SessionTTLExceed    = errors.New("session ttl exceed")
-	SessionNilErr       = errors.New("nil session ops err")
 	StreamIdDupErr      = errors.New("stream id duplicated err")
 	StreamIdNotFoundErr = errors.New("stream id not found")
 )
@@ -44,8 +43,8 @@ func getDefaultSessionConfig() *SessionConfig {
 type Session struct {
 	conn io.ReadWriteCloser
 
-	streams     map[uint32]*Stream
-	streamMutex *sync.Mutex
+	streams        map[uint32]*Stream
+	streamMutex    *sync.Mutex
 
 	streamIdCounter uint32
 	streamIdMutex   *sync.Mutex
@@ -302,9 +301,6 @@ func (session *Session) unregisterStream(stream *Stream) error {
 }
 
 func (session *Session) OpenStream() (*Stream, error) {
-	if session == nil {
-		return nil, SessionNilErr
-	}
 	streamId := session.genStreamId()
 	stream := NewStream(streamId, session)
 	err := session.registerStream(stream)
