@@ -116,7 +116,7 @@ func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
 		option(session)
 	}
 
-	session.streamIdCounter = uint32(session.role)	// 初始化 streamId 计数器
+	session.streamIdCounter = uint32(session.role) // 初始化 streamId 计数器
 
 	// 维护任务
 	go session.recvLoop()
@@ -151,6 +151,10 @@ func (session *Session) putBuffer(buffer []byte) {
 	if session.bufferRecycle != nil {
 		session.bufferRecycle(buffer)
 	}
+}
+
+func (session *Session) Done() <-chan struct{} {
+	return session.ctx.Done()
 }
 
 func (session *Session) IsClose() bool {

@@ -47,6 +47,10 @@ func (stream *Stream) writeFrame(cmd cmdType, buffer []byte) (int, error) {
 	}
 }
 
+func (stream *Stream) Done() <-chan struct{} {
+	return stream.ctx.Done()
+}
+
 func (stream *Stream) Write(buffer []byte) (int, error) {
 	return stream.writeFrame(cmdPSH, buffer)
 }
