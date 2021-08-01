@@ -20,70 +20,103 @@ var (
 type roleType uint8
 
 const (
-	RoleClient roleType = iota + 1
+	RoleClient roleType = iota + 1 // 客户端为奇数，服务器端为偶数
 	RoleServer
+	defaultBufferSize = 64 * 1024
 )
-
-type SessionConfig struct {
-	keepAliveSwitch   bool
-	keepAliveInterval uint8
-	keepAliveTTL      uint8
-	bufferSize        uint
-}
-
-func getDefaultSessionConfig() *SessionConfig {
-	return &SessionConfig{
-		keepAliveSwitch:   true,
-		keepAliveInterval: 30,
-		keepAliveTTL:      90,
-		bufferSize:        64 * 1024,
-	}
-}
 
 type Session struct {
 	conn io.ReadWriteCloser
 
-	streams        map[uint32]*Stream
-	streamMutex    *sync.Mutex
+	streams     map[uint32]*Stream
+	streamMutex *sync.Mutex
 
 	streamIdCounter uint32
 	streamIdMutex   *sync.Mutex
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
-	bufferPool      *sync.Pool  // session buffer pool
 
 	err    error // current err
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	role   roleType
-	config *SessionConfig
+	// session config
+	role              roleType
+	keepAliveSwitch   bool
+	keepAliveInterval uint8
+	keepAliveTTL      uint8
+	bufferAlloc       BufferAllocFunc
+	bufferRecycle     BufferRecycleFunc
 }
 
-func NewSession(conn io.ReadWriteCloser, role roleType, configPtr *SessionConfig) *Session {
+type Option func(*Session)
+type BufferAllocFunc func() []byte
+type BufferRecycleFunc func([]byte)
 
-	ctx, cancel := context.WithCancel(context.TODO())
-
-	if configPtr == nil {
-		configPtr = getDefaultSessionConfig()
+func WithRole(role roleType) Option {
+	return func(session *Session) {
+		session.role = role
 	}
+}
 
+func WithKeepAliveSwitch(choose bool) Option {
+	return func(session *Session) {
+		session.keepAliveSwitch = choose
+	}
+}
+
+func WithKeepAliveInterval(interval uint8) Option {
+	return func(session *Session) {
+		session.keepAliveInterval = interval
+	}
+}
+
+func WithKeepAliveTTL(ttl uint8) Option {
+	return func(session *Session) {
+		session.keepAliveTTL = ttl
+	}
+}
+
+func WithBufferAllocFunc(f BufferAllocFunc) Option {
+	return func(session *Session) {
+		session.bufferAlloc = f
+	}
+}
+
+func WithBufferRecycleFunc(f BufferRecycleFunc) Option {
+	return func(session *Session) {
+		session.bufferRecycle = f
+	}
+}
+
+func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
+	ctx, cancel := context.WithCancel(context.TODO())
 	session := &Session{
 		conn:            conn,
-		streams:         make(map[uint32]*Stream, 256),
+		streams:         make(map[uint32]*Stream, 64),
 		streamMutex:     new(sync.Mutex),
-		streamIdCounter: uint32(role),
+		streamIdCounter: 0,
 		streamIdMutex:   new(sync.Mutex),
 		readyWriteChan:  make(chan *Frame),
 		readyAcceptChan: make(chan *Frame),
-		bufferPool:      &sync.Pool{New: func() interface{} { return make([]byte, configPtr.bufferSize) }},
 		err:             nil,
 		ctx:             ctx,
 		cancel:          cancel,
-		role:            role,
-		config:          configPtr,
+
+		role:              RoleClient,
+		keepAliveSwitch:   false,
+		keepAliveInterval: 30,
+		keepAliveTTL:      90,
+		bufferAlloc:       nil,
+		bufferRecycle:     nil,
 	}
+
+	for _, option := range options {
+		option(session)
+	}
+
+	session.streamIdCounter = uint32(session.role)	// 初始化 streamId 计数器
 
 	// 维护任务
 	go session.recvLoop()
@@ -108,11 +141,16 @@ func (session *Session) genStreamId() uint32 {
 }
 
 func (session *Session) getBuffer() []byte {
-	return session.bufferPool.Get().([]byte)
+	if session.bufferAlloc == nil {
+		return make([]byte, defaultBufferSize)
+	}
+	return session.bufferAlloc()
 }
 
-func (session *Session) PutBuffer(buffer []byte) {
-	session.bufferPool.Put(buffer)
+func (session *Session) putBuffer(buffer []byte) {
+	if session.bufferRecycle != nil {
+		session.bufferRecycle(buffer)
+	}
 }
 
 func (session *Session) IsClose() bool {
@@ -136,11 +174,11 @@ func (session *Session) CloseWithErr(err error) {
 
 func (session *Session) recvLoop() {
 	buffer := session.getBuffer()
-	defer session.PutBuffer(buffer)
+	defer session.putBuffer(buffer)
 
 	ttl := 30 * 24 * time.Hour // 这里先假设一个很长的时间
-	if session.config != nil && session.config.keepAliveSwitch {
-		ttl = time.Duration(session.config.keepAliveTTL) * time.Second
+	if session.keepAliveSwitch {
+		ttl = time.Duration(session.keepAliveTTL) * time.Second
 	}
 
 	ttlTicker := time.NewTicker(ttl)
@@ -219,7 +257,7 @@ func (session *Session) recvLoop() {
 
 func (session *Session) sendLoop() {
 	buffer := session.getBuffer()
-	defer session.PutBuffer(buffer)
+	defer session.putBuffer(buffer)
 
 	defer func() {
 		zap.L().Debug("mux sendLoop closed")
@@ -249,8 +287,8 @@ func (session *Session) sendLoop() {
 
 // 持续地发送心跳包
 func (session *Session) heartBeatLoop() {
-	if session.config != nil && session.config.keepAliveSwitch {
-		ticker := time.NewTicker(time.Duration(session.config.keepAliveInterval) * time.Second)
+	if session.keepAliveSwitch {
+		ticker := time.NewTicker(time.Duration(session.keepAliveInterval) * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
