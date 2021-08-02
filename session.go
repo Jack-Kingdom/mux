@@ -48,6 +48,7 @@ type Session struct {
 	keepAliveTTL      uint8
 	bufferAlloc       BufferAllocFunc
 	bufferRecycle     BufferRecycleFunc
+	createdAt         time.Time
 }
 
 type Option func(*Session)
@@ -110,6 +111,7 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 		keepAliveTTL:      90,
 		bufferAlloc:       nil,
 		bufferRecycle:     nil,
+		createdAt:         time.Now(),
 	}
 
 	for _, option := range options {
@@ -142,6 +144,10 @@ func (session *Session) genStreamId() uint32 {
 	session.streamIdCounter += 2
 
 	return current
+}
+
+func (session *Session) CreatedAt() time.Time {
+	return session.createdAt
 }
 
 func (session *Session) getBuffer() []byte {
