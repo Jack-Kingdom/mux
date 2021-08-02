@@ -90,8 +90,8 @@ func WithBufferRecycleFunc(f BufferRecycleFunc) Option {
 	}
 }
 
-func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
-	ctx, cancel := context.WithCancel(context.TODO())
+func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
+	ctx, cancel := context.WithCancel(ctx)
 	session := &Session{
 		conn:            conn,
 		streams:         make(map[uint32]*Stream, 64),
@@ -124,6 +124,10 @@ func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
 	go session.heartBeatLoop()
 
 	return session
+}
+
+func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
+	return NewSessionContext(context.TODO(), conn, options...)
 }
 
 /*

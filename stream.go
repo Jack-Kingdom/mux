@@ -17,8 +17,9 @@ type Stream struct {
 	cancel        context.CancelFunc
 }
 
+// NewStream todo 修改为 session 的成员方法
 func NewStream(streamId uint32, session *Session) *Stream {
-	ctx, cancel := context.WithCancel(context.TODO())
+	ctx, cancel := context.WithCancel(session.ctx)
 	return &Stream{
 		id:            streamId,
 		session:       session,
@@ -37,8 +38,6 @@ func (stream *Stream) writeFrame(cmd cmdType, buffer []byte) (int, error) {
 	case stream.session.readyWriteChan <- frame:
 		// 直接返回的话可能会导致 frame 中 data 的 buffer 被回收覆盖
 		select {
-		case <-stream.session.ctx.Done():
-			return 0, stream.session.err
 		case <-stream.ctx.Done():
 			return 0, StreamClosedErr
 		case <-frame.ctx.Done():
@@ -57,8 +56,6 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 
 func (stream *Stream) Read(buffer []byte) (int, error) {
 	select {
-	case <-stream.session.ctx.Done():
-		return 0, stream.session.err
 	case <-stream.ctx.Done():
 		return 0, StreamClosedErr
 	case frame := <-stream.readyReadChan:
