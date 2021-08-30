@@ -220,17 +220,19 @@ func (session *Session) recvLoop() {
 			}
 
 			switch frame.cmd {
-			case cmdSYN:
-				select {
-				case <-session.ctx.Done():
-					return
-				case session.readyAcceptChan <- frame:
+			case cmdSYN, cmdPSH:
+				if frame.cmd == cmdSYN {	// syn frame create stream first
 					select {
 					case <-session.ctx.Done():
-					case <-frame.ctx.Done():
+						return
+					case session.readyAcceptChan <- frame:
+						select {
+						case <-session.ctx.Done():
+						case <-frame.ctx.Done():
+						}
 					}
 				}
-			case cmdPSH:
+
 				stream, err := session.getStream(frame.streamId)
 				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
 					// 此处没有拿到 stream，可能被关闭了，此时通知远程进行关闭
@@ -355,8 +357,6 @@ func (session *Session) OpenStream() (*Stream, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	_, err = stream.writeFrame(cmdSYN, nil)
 	return stream, err
 }
 

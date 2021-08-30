@@ -11,6 +11,7 @@ var (
 
 type Stream struct {
 	id            uint32
+	syn           bool // if sync false, write sync cmd to server create new stream
 	session       *Session
 	readyReadChan chan *Frame
 	ctx           context.Context
@@ -22,6 +23,7 @@ func NewStream(streamId uint32, session *Session) *Stream {
 	ctx, cancel := context.WithCancel(session.ctx)
 	return &Stream{
 		id:            streamId,
+		syn:           false,
 		session:       session,
 		readyReadChan: make(chan *Frame),
 		ctx:           ctx,
@@ -51,7 +53,14 @@ func (stream *Stream) Done() <-chan struct{} {
 }
 
 func (stream *Stream) Write(buffer []byte) (int, error) {
-	return stream.writeFrame(cmdPSH, buffer)
+	var cmd cmdType
+	if stream.syn {
+		cmd = cmdPSH
+	}else {
+		cmd = cmdSYN
+	}
+
+	return stream.writeFrame(cmd, buffer)
 }
 
 func (stream *Stream) Read(buffer []byte) (int, error) {
