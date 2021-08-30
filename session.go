@@ -273,10 +273,6 @@ func (session *Session) sendLoop() {
 	buffer := session.getBuffer()
 	defer session.putBuffer(buffer)
 
-	defer func() {
-		zap.L().Debug("mux sendLoop closed")
-	}()
-
 	for {
 		select {
 		case <-session.ctx.Done():
