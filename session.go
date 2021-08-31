@@ -22,7 +22,6 @@ type roleType uint8
 const (
 	RoleClient roleType = iota + 1 // 客户端为奇数，服务器端为偶数
 	RoleServer
-	defaultBufferSize = 64 * 1024
 )
 
 type Session struct {
@@ -152,15 +151,17 @@ func (session *Session) CreatedAt() time.Time {
 
 func (session *Session) getBuffer() []byte {
 	if session.bufferAlloc == nil {
-		return make([]byte, defaultBufferSize)
+		return getBuffer()
 	}
 	return session.bufferAlloc()
 }
 
 func (session *Session) putBuffer(buffer []byte) {
-	if session.bufferRecycle != nil {
-		session.bufferRecycle(buffer)
+	if session.bufferRecycle == nil {
+		putBuffer(buffer)
+		return
 	}
+	session.bufferRecycle(buffer)
 }
 
 func (session *Session) Done() <-chan struct{} {
@@ -222,13 +223,14 @@ func (session *Session) recvLoop() {
 			switch frame.cmd {
 			case cmdSYN, cmdPSH:
 				if frame.cmd == cmdSYN {	// syn frame create stream first
+					synFrame := NewFrame(cmdSYN, frame.streamId, nil)
 					select {
 					case <-session.ctx.Done():
 						return
-					case session.readyAcceptChan <- frame:
+					case session.readyAcceptChan <- synFrame:
 						select {
 						case <-session.ctx.Done():
-						case <-frame.ctx.Done():
+						case <-synFrame.ctx.Done():
 						}
 					}
 				}
@@ -352,7 +354,7 @@ func (session *Session) unregisterStream(stream *Stream) error {
 
 func (session *Session) OpenStream() (*Stream, error) {
 	streamId := session.genStreamId()
-	stream := NewStream(streamId, session)
+	stream := NewStream(streamId, false, session)
 	err := session.registerStream(stream)
 	if err != nil {
 		return nil, err
@@ -367,9 +369,9 @@ func (session *Session) Open() (io.ReadWriteCloser, error) {
 func (session *Session) AcceptStream() (*Stream, error) {
 	select {
 	case <-session.ctx.Done():
-		return nil, SessionClosedErr
+		return nil, errors.Wrap(SessionClosedErr, session.err.Error())
 	case frame := <-session.readyAcceptChan:
-		stream := NewStream(frame.streamId, session)
+		stream := NewStream(frame.streamId, true, session)
 		err := session.registerStream(stream)
 		if err != nil {
 			return nil, err

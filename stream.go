@@ -11,7 +11,7 @@ var (
 
 type Stream struct {
 	id            uint32
-	syn           bool // if sync false, write sync cmd to server create new stream
+	syn           bool // if sync false, write sync cmd to server create new stream with data
 	session       *Session
 	readyReadChan chan *Frame
 	ctx           context.Context
@@ -19,11 +19,11 @@ type Stream struct {
 }
 
 // NewStream todo 修改为 session 的成员方法
-func NewStream(streamId uint32, session *Session) *Stream {
+func NewStream(streamId uint32, syn bool, session *Session) *Stream {
 	ctx, cancel := context.WithCancel(session.ctx)
 	return &Stream{
 		id:            streamId,
-		syn:           false,
+		syn:           syn,
 		session:       session,
 		readyReadChan: make(chan *Frame),
 		ctx:           ctx,
@@ -56,7 +56,7 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 	var cmd cmdType
 	if stream.syn {
 		cmd = cmdPSH
-	}else {
+	} else {
 		cmd = cmdSYN
 		stream.syn = true
 	}

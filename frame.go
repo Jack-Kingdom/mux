@@ -97,7 +97,7 @@ func (frame *Frame) UnMarshal(buffer []byte) (int, error) {
 
 	frame.streamId = binary.BigEndian.Uint32(buffer[sizeOfCmd:])
 
-	dataLength := int(binary.BigEndian.Uint16(buffer[headerSize:]))
+	dataLength := int(binary.BigEndian.Uint16(buffer[sizeOfCmd+sizeOfStreamId:]))
 	if len(buffer) < headerSize+dataLength {
 		return 0, BufferSizeLimitErr
 	}
