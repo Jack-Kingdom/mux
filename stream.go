@@ -58,6 +58,7 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 		cmd = cmdPSH
 	}else {
 		cmd = cmdSYN
+		stream.syn = true
 	}
 
 	return stream.writeFrame(cmd, buffer)
