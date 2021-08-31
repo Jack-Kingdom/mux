@@ -68,34 +68,24 @@ func NewFrame(cmd cmdType, streamId uint32, data []byte) *Frame {
 }
 
 func (frame *Frame) Marshal(buffer []byte) (int, error) {
-	switch frame.cmd {
-	case cmdSYN, cmdFIN, cmdNOP:
-		headerSize := sizeOfCmd + sizeOfStreamId
-		if len(buffer) < headerSize {
-			return 0, BufferSizeLimitErr
-		}
-
-		buffer[0] = frame.Cmd()
-		binary.BigEndian.PutUint32(buffer[sizeOfCmd:], frame.streamId)
-		return headerSize, nil
-	case cmdPSH:
-		headerSize := sizeOfCmd + sizeOfStreamId + sizeOfLength
-		totalSize := headerSize + len(frame.data)
-		if len(buffer) < totalSize {
-			return 0, BufferSizeLimitErr
-		}
-		buffer[0] = frame.Cmd()
-		binary.BigEndian.PutUint32(buffer[sizeOfCmd:], frame.streamId)
-		binary.BigEndian.PutUint16(buffer[sizeOfCmd+sizeOfStreamId:], uint16(len(frame.data)))
-		copy(buffer[headerSize:], frame.data)
-		return totalSize, nil
-	default:
-		return 0, UnknownCmdErr
+	if err := frame.checkCmd(); err != nil {
+		return 0, err
 	}
+
+	headerSize := sizeOfCmd + sizeOfStreamId + sizeOfLength
+	totalSize := headerSize + len(frame.data)
+	if len(buffer) < totalSize {
+		return 0, BufferSizeLimitErr
+	}
+	buffer[0] = frame.Cmd()
+	binary.BigEndian.PutUint32(buffer[sizeOfCmd:], frame.streamId)
+	binary.BigEndian.PutUint16(buffer[sizeOfCmd+sizeOfStreamId:], uint16(len(frame.data)))
+	copy(buffer[headerSize:], frame.data)
+	return totalSize, nil
 }
 
 func (frame *Frame) UnMarshal(buffer []byte) (int, error) {
-	headerSize := sizeOfCmd + sizeOfStreamId
+	headerSize := sizeOfCmd + sizeOfStreamId + sizeOfLength
 	if len(buffer) < headerSize {
 		return 0, BufferSizeLimitErr
 	}
@@ -107,15 +97,12 @@ func (frame *Frame) UnMarshal(buffer []byte) (int, error) {
 
 	frame.streamId = binary.BigEndian.Uint32(buffer[sizeOfCmd:])
 
-	used := headerSize
-
-	if frame.cmd == cmdPSH {
-		dataLength := int(binary.BigEndian.Uint16(buffer[headerSize:]))
-		if len(buffer) < headerSize+sizeOfLength+dataLength {
-			return 0, BufferSizeLimitErr
-		}
-		frame.data = buffer[headerSize+sizeOfLength : headerSize+sizeOfLength+dataLength]
-		used += sizeOfLength + dataLength
+	dataLength := int(binary.BigEndian.Uint16(buffer[headerSize:]))
+	if len(buffer) < headerSize+dataLength {
+		return 0, BufferSizeLimitErr
 	}
+	frame.data = buffer[headerSize : headerSize+dataLength]
+	used := headerSize + dataLength
+
 	return used, nil
 }
