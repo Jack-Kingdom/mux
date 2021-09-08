@@ -164,8 +164,8 @@ func (session *Session) putBuffer(buffer []byte) {
 	session.bufferRecycle(buffer)
 }
 
-func (session *Session) Done() <-chan struct{} {
-	return session.ctx.Done()
+func (session *Session) Ctx() context.Context {
+	return session.ctx
 }
 
 func (session *Session) IsClose() bool {
