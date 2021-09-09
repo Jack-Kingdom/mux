@@ -179,6 +179,7 @@ func (session *Session) IsClose() bool {
 
 func (session *Session) Close() error {
 	session.cancel()
+	session.conn.Close()
 	return session.err
 }
 
