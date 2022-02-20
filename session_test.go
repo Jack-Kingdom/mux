@@ -54,7 +54,7 @@ func TestSession(t *testing.T) {
 			t.Logf("server stream %d write: %s", stream.id, buffer[:n])
 
 			err = stream.Close()
-			if err!=nil {
+			if err != nil {
 				t.Error(err)
 				return
 			}
@@ -93,7 +93,7 @@ func TestSession(t *testing.T) {
 		t.Logf("client stream %d read: %s", stream.id, buffer[:n])
 
 		err = stream.Close()
-		if err !=nil {
+		if err != nil {
 			t.Error(err)
 			return
 		}

@@ -168,7 +168,7 @@ func (session *Session) Ctx() context.Context {
 }
 
 // Lifetime 用以获取当前 session 的存在时间
-func (session *Session) Lifetime() time.Duration{
+func (session *Session) Lifetime() time.Duration {
 	return time.Now().Sub(session.createdAt)
 }
 
