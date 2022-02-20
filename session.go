@@ -47,6 +47,9 @@ type Session struct {
 	keepAliveTTL      uint8
 	bufferAlloc       BufferAllocFunc
 	bufferRecycle     BufferRecycleFunc
+
+	// private variable
+	createdAt time.Time
 }
 
 type Option func(*Session)
@@ -109,6 +112,8 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 		keepAliveTTL:      90,
 		bufferAlloc:       nil,
 		bufferRecycle:     nil,
+
+		createdAt: time.Now(),
 	}
 
 	for _, option := range options {
@@ -160,6 +165,11 @@ func (session *Session) putBuffer(buffer []byte) {
 
 func (session *Session) Ctx() context.Context {
 	return session.ctx
+}
+
+// Lifetime 用以获取当前 session 的存在时间
+func (session *Session) Lifetime() time.Duration{
+	return time.Now().Sub(session.createdAt)
 }
 
 func (session *Session) IsClose() bool {
@@ -217,7 +227,7 @@ func (session *Session) recvLoop() {
 
 			switch frame.cmd {
 			case cmdSYN, cmdPSH:
-				if frame.cmd == cmdSYN {	// syn frame create stream first
+				if frame.cmd == cmdSYN { // syn frame create stream first
 					synFrame := NewFrame(cmdSYN, frame.streamId, nil)
 					select {
 					case <-session.ctx.Done():
