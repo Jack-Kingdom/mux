@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"github.com/pkg/errors"
 )
 
@@ -87,7 +88,7 @@ func (frame *Frame) Marshal(buffer []byte) (int, error) {
 func (frame *Frame) UnMarshal(buffer []byte) (int, error) {
 	headerSize := sizeOfCmd + sizeOfStreamId + sizeOfLength
 	if len(buffer) < headerSize {
-		return 0, BufferSizeLimitErr
+		return 0, errors.Wrap(BufferSizeLimitErr, "buffer length less than headerSize")
 	}
 
 	frame.cmd = cmdType(buffer[0])
@@ -99,7 +100,7 @@ func (frame *Frame) UnMarshal(buffer []byte) (int, error) {
 
 	dataLength := int(binary.BigEndian.Uint16(buffer[sizeOfCmd+sizeOfStreamId:]))
 	if len(buffer) < headerSize+dataLength {
-		return 0, BufferSizeLimitErr
+		return 0, errors.Wrap(BufferSizeLimitErr, fmt.Sprintf("buffer length %d less than protocol showed %d", len(buffer), headerSize+dataLength))
 	}
 	frame.data = buffer[headerSize : headerSize+dataLength]
 	used := headerSize + dataLength
