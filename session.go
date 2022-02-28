@@ -24,6 +24,7 @@ const (
 	RoleServer
 )
 
+// todo 添加 stream Counter 方法
 type Session struct {
 	conn io.ReadWriteCloser
 
@@ -45,6 +46,7 @@ type Session struct {
 	keepAliveSwitch   bool
 	keepAliveInterval uint8
 	keepAliveTTL      uint8
+	bufferSizeLimit   int
 	bufferAlloc       BufferAllocFunc
 	bufferRecycle     BufferRecycleFunc
 
@@ -77,6 +79,12 @@ func WithKeepAliveInterval(interval uint8) Option {
 func WithKeepAliveTTL(ttl uint8) Option {
 	return func(session *Session) {
 		session.keepAliveTTL = ttl
+	}
+}
+
+func WithBufferSizeLimit(sizeLimit int) Option {
+	return func(session *Session) {
+		session.bufferSizeLimit = sizeLimit
 	}
 }
 
@@ -149,17 +157,10 @@ func (session *Session) genStreamId() uint32 {
 }
 
 func (session *Session) getBuffer() []byte {
-	if session.bufferAlloc == nil {
-		return getBuffer()
-	}
 	return session.bufferAlloc()
 }
 
 func (session *Session) putBuffer(buffer []byte) {
-	if session.bufferRecycle == nil {
-		putBuffer(buffer)
-		return
-	}
 	session.bufferRecycle(buffer)
 }
 
@@ -212,7 +213,7 @@ func (session *Session) recvLoop() {
 			session.CloseWithErr(SessionTTLExceed)
 			return
 		default:
-			n, err := session.conn.Read(buffer)
+			n, err := session.conn.Read(buffer[:session.bufferSizeLimit])
 			if err != nil {
 				session.CloseWithErr(errors.Wrap(ConnReadWriteOpsErr, err.Error()))
 				return
