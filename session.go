@@ -213,7 +213,7 @@ func (session *Session) recvLoop() {
 			session.CloseWithErr(SessionTTLExceed)
 			return
 		default:
-			n, err := session.conn.Read(buffer[:session.bufferSizeLimit])
+			n, err := session.conn.Read(buffer)
 			if err != nil {
 				session.CloseWithErr(errors.Wrap(ConnReadWriteOpsErr, err.Error()))
 				return
