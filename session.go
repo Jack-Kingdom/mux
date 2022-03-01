@@ -24,7 +24,6 @@ const (
 	RoleServer
 )
 
-// todo 添加 stream Counter 方法
 type Session struct {
 	conn io.ReadWriteCloser
 
@@ -140,6 +139,10 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 
 func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
 	return NewSessionContext(context.TODO(), conn, options...)
+}
+
+func (session *Session) StreamCount() int {
+	return len(session.streams)
 }
 
 /*
