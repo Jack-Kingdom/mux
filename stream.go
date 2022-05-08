@@ -3,10 +3,17 @@ package mux
 import (
 	"context"
 	"errors"
+	"net"
+	"time"
 )
 
 var (
-	StreamClosedErr = errors.New("stream has been closed")
+	ErrStreamClosed      = errors.New("stream has been closed")
+	ErrReadBufferLimited = errors.New("read buffer limited")
+	ErrReadTimeout       = errors.New("read timeout")
+	ErrWriteTimeout      = errors.New("write timeout")
+
+	defaultTimeout = 24 * time.Hour
 )
 
 type Stream struct {
@@ -14,11 +21,13 @@ type Stream struct {
 	syn           bool // if sync false, write sync cmd to server create new stream with data
 	session       *Session
 	readyReadChan chan *Frame
+	readDeadline  time.Time
+	writeDeadline time.Time
 	ctx           context.Context
 	cancel        context.CancelFunc
 }
 
-// NewStream todo 修改为 session 的成员方法
+// NewStream create a new stream
 func NewStream(streamId uint32, syn bool, session *Session) *Stream {
 	ctx, cancel := context.WithCancel(session.ctx)
 	return &Stream{
@@ -34,14 +43,24 @@ func NewStream(streamId uint32, syn bool, session *Session) *Stream {
 func (stream *Stream) writeFrame(cmd cmdType, buffer []byte) (int, error) {
 	frame := NewFrame(cmd, stream.id, buffer)
 
+	var timeout *time.Timer
+	if stream.readDeadline != (time.Time{}) {
+		timeout = time.NewTimer(time.Until(stream.readDeadline))
+	} else {
+		timeout = time.NewTimer(defaultTimeout)
+	}
+	defer timeout.Stop()
+
 	select {
 	case <-stream.session.ctx.Done():
 		return 0, stream.session.err
+	case <-timeout.C:
+		return 0, ErrWriteTimeout
 	case stream.session.readyWriteChan <- frame:
 		// 直接返回的话可能会导致 frame 中 data 的 buffer 被回收覆盖
 		select {
 		case <-stream.ctx.Done():
-			return 0, StreamClosedErr
+			return 0, ErrStreamClosed
 		case <-frame.ctx.Done():
 			return len(buffer), nil
 		}
@@ -65,11 +84,24 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 }
 
 func (stream *Stream) Read(buffer []byte) (int, error) {
+	var timeout *time.Timer
+	if stream.readDeadline != (time.Time{}) {
+		timeout = time.NewTimer(time.Until(stream.readDeadline))
+	} else {
+		timeout = time.NewTimer(defaultTimeout)
+	}
+	defer timeout.Stop()
+
 	select {
 	case <-stream.ctx.Done():
-		return 0, StreamClosedErr
+		return 0, ErrStreamClosed
+	case <-timeout.C:
+		return 0, ErrReadTimeout
 	case frame := <-stream.readyReadChan:
-		copy(buffer, frame.data) // todo 对性能的影响待评估
+		if len(buffer) < len(frame.data) {
+			return 0, ErrReadBufferLimited
+		}
+		copy(buffer, frame.data)
 		_ = frame.Close()
 		return len(frame.data), nil
 	}
@@ -89,4 +121,28 @@ func (stream *Stream) Close() error {
 	stream.cancel()
 	_ = stream.session.unregisterStream(stream)
 	return nil
+}
+
+func (stream *Stream) SetReadDeadline(t time.Time) error {
+	stream.readDeadline = t
+	return nil
+}
+
+func (stream *Stream) SetWriteDeadline(t time.Time) error {
+	stream.writeDeadline = t
+	return nil
+}
+
+func (stream *Stream) SetDeadline(t time.Time) error {
+	stream.readDeadline = t
+	stream.writeDeadline = t
+	return nil
+}
+
+func (stream *Stream) LocalAddr() net.Addr {
+	return &Addr{}
+}
+
+func (stream *Stream) RemoteAddr() net.Addr {
+	return &Addr{}
 }

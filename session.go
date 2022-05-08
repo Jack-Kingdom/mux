@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"io"
@@ -20,7 +21,7 @@ var (
 type roleType uint8
 
 const (
-	RoleClient roleType = iota + 1 // 客户端为奇数，服务器端为偶数
+	RoleClient roleType = 1 + iota // 客户端为奇数，服务器端为偶数
 	RoleServer
 )
 
@@ -28,10 +29,10 @@ type Session struct {
 	conn io.ReadWriteCloser
 
 	streams     map[uint32]*Stream
-	streamMutex *sync.Mutex
+	streamMutex sync.Mutex
 
 	streamIdCounter uint32
-	streamIdMutex   *sync.Mutex
+	streamIdMutex   sync.Mutex
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -45,7 +46,7 @@ type Session struct {
 	keepAliveSwitch   bool
 	keepAliveInterval uint8
 	keepAliveTTL      uint8
-	bufferSizeLimit   int
+	bufferSize        int
 	bufferAlloc       BufferAllocFunc
 	bufferRecycle     BufferRecycleFunc
 
@@ -81,9 +82,9 @@ func WithKeepAliveTTL(ttl uint8) Option {
 	}
 }
 
-func WithBufferSizeLimit(sizeLimit int) Option {
+func WithBufferSize(sizeLimit int) Option {
 	return func(session *Session) {
-		session.bufferSizeLimit = sizeLimit
+		session.bufferSize = sizeLimit
 	}
 }
 
@@ -100,27 +101,22 @@ func WithBufferRecycleFunc(f BufferRecycleFunc) Option {
 }
 
 func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
-	ctx, cancel := context.WithCancel(ctx)
+	currentCtx, cancel := context.WithCancel(ctx)
 	session := &Session{
 		conn:            conn,
 		streams:         make(map[uint32]*Stream, 64),
-		streamMutex:     new(sync.Mutex),
-		streamIdCounter: 0,
-		streamIdMutex:   new(sync.Mutex),
 		readyWriteChan:  make(chan *Frame),
 		readyAcceptChan: make(chan *Frame),
 		err:             nil,
-		ctx:             ctx,
+		ctx:             currentCtx,
 		cancel:          cancel,
 
 		role:              RoleClient,
 		keepAliveSwitch:   false,
 		keepAliveInterval: 30,
 		keepAliveTTL:      90,
-		bufferAlloc:       nil,
-		bufferRecycle:     nil,
-
-		createdAt: time.Now(),
+		bufferSize:        1024,
+		createdAt:         time.Now(),
 	}
 
 	for _, option := range options {
@@ -132,7 +128,9 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 	// 维护任务
 	go session.recvLoop()
 	go session.sendLoop()
-	go session.heartBeatLoop()
+	if session.keepAliveSwitch {
+		go session.heartBeatLoop()
+	}
 
 	return session
 }
@@ -160,11 +158,19 @@ func (session *Session) genStreamId() uint32 {
 }
 
 func (session *Session) getBuffer() []byte {
-	return session.bufferAlloc()
+	if session.bufferAlloc != nil {
+		return session.bufferAlloc()
+	}
+
+	return dsaBuffer.Get(session.bufferSize)
 }
 
 func (session *Session) putBuffer(buffer []byte) {
-	session.bufferRecycle(buffer)
+	if session.bufferRecycle != nil {
+		session.bufferRecycle(buffer)
+	} else {
+		dsaBuffer.Put(buffer)
+	}
 }
 
 func (session *Session) Ctx() context.Context {
@@ -187,7 +193,7 @@ func (session *Session) IsClose() bool {
 
 func (session *Session) Close() error {
 	session.cancel()
-	session.conn.Close()
+	_ = session.conn.Close()
 	return session.err
 }
 
@@ -229,6 +235,8 @@ func (session *Session) recvLoop() {
 				return
 			}
 
+			zap.L().Debug("read frame", zap.Uint32("stream", frame.streamId), zap.Uint8("cmd", frame.Cmd()), zap.ByteString("data", frame.data))
+
 			switch frame.cmd {
 			case cmdSYN, cmdPSH:
 				if frame.cmd == cmdSYN { // syn frame create stream first
@@ -252,6 +260,7 @@ func (session *Session) recvLoop() {
 					case <-session.ctx.Done():
 					case session.readyWriteChan <- NewFrame(cmdFIN, frame.streamId, nil):
 					}
+					zap.L().Error("stream not found", zap.Uint32("streamId", frame.streamId))
 					continue
 				}
 
@@ -273,7 +282,8 @@ func (session *Session) recvLoop() {
 					// 这个 stream 可能已经被关闭了,直接返回就可以了
 					continue
 				}
-				_ = stream.Close()
+				stream.cancel()
+				_ = session.unregisterStream(stream)
 			case cmdNOP:
 				zap.L().Debug("ttl pkg received")
 				ttlTicker.Reset(ttl)
@@ -303,6 +313,8 @@ func (session *Session) sendLoop() {
 				return
 			}
 
+			zap.L().Debug("write frame", zap.Uint32("stream", frame.streamId), zap.Uint8("cmd", frame.Cmd()), zap.ByteString("data", frame.data))
+
 			_ = frame.Close() // 标记当前 frame 不再使用了
 		}
 	}
@@ -310,21 +322,31 @@ func (session *Session) sendLoop() {
 
 // 持续地发送心跳包
 func (session *Session) heartBeatLoop() {
-	if session.keepAliveSwitch {
-		ticker := time.NewTicker(time.Duration(session.keepAliveInterval) * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-session.ctx.Done():
-				return
-			case <-ticker.C:
-				frame := NewFrame(cmdNOP, 0, nil)
-				session.readyWriteChan <- frame
-				zap.L().Debug("ttl pkg sent")
-			}
+	ticker := time.NewTicker(time.Duration(session.keepAliveInterval) * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-session.ctx.Done():
+			return
+		case <-ticker.C:
+			frame := NewFrame(cmdNOP, 0, nil)
+			session.readyWriteChan <- frame
+			zap.L().Debug("ttl pkg sent")
 		}
 	}
+}
 
+func (session *Session) newStream(streamId uint32, syn bool) *Stream {
+	ctx, cancel := context.WithCancel(session.ctx)
+	return &Stream{
+		id:            streamId,
+		syn:           syn,
+		session:       session,
+		readyReadChan: make(chan *Frame),
+		ctx:           ctx,
+		cancel:        cancel,
+	}
 }
 
 func (session *Session) getStream(streamId uint32) (*Stream, error) {
@@ -363,7 +385,7 @@ func (session *Session) unregisterStream(stream *Stream) error {
 
 func (session *Session) OpenStream() (*Stream, error) {
 	streamId := session.genStreamId()
-	stream := NewStream(streamId, false, session)
+	stream := session.newStream(streamId, false)
 	err := session.registerStream(stream)
 	if err != nil {
 		return nil, err
@@ -380,14 +402,14 @@ func (session *Session) AcceptStream() (*Stream, error) {
 	case <-session.ctx.Done():
 		return nil, errors.Wrap(SessionClosedErr, session.err.Error())
 	case frame := <-session.readyAcceptChan:
-		stream := NewStream(frame.streamId, true, session)
+		stream := session.newStream(frame.streamId, true)
 		err := session.registerStream(stream)
 		if err != nil {
 			return nil, err
 		}
-		return stream, frame.Close()
+		_ = frame.Close()
+		return stream, nil
 	}
-
 }
 
 func (session *Session) Accept() (io.ReadWriteCloser, error) {

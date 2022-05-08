@@ -2,13 +2,15 @@ package mux
 
 import (
 	"go.uber.org/zap"
+	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"testing"
 )
 
 const (
 	bufferLength = 8 * 1024
-	bufferLimit  = 6 * 1024
 )
 
 var (
@@ -20,7 +22,13 @@ func TestSession(t *testing.T) {
 	zap.ReplaceGlobals(logger)
 
 	go func() {
+		log.Println(http.ListenAndServe(":6060", nil))
+	}()
+
+	go func() {
 		listener, err := net.Listen("tcp", "localhost:8843")
+		defer listener.Close()
+
 		if err != nil {
 			t.Error(err)
 			return
@@ -34,15 +42,7 @@ func TestSession(t *testing.T) {
 		}
 		t.Logf("conn accept.")
 
-		session := NewSession(conn,
-			WithRole(RoleServer),
-			WithBufferSizeLimit(bufferLimit),
-			WithBufferAllocFunc(func() []byte {
-				return make([]byte, bufferLength)
-			}),
-			WithBufferRecycleFunc(func(buffer []byte) {
-			}),
-		)
+		session := NewSession(conn, WithRole(RoleServer), WithBufferSize(bufferLength))
 
 		for {
 			stream, err := session.AcceptStream()
@@ -76,20 +76,14 @@ func TestSession(t *testing.T) {
 	}()
 
 	conn, err := net.Dial("tcp", "localhost:8843")
+	defer conn.Close()
+
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	session := NewSession(conn,
-		WithRole(RoleClient),
-		WithBufferSizeLimit(bufferLimit),
-		WithBufferAllocFunc(func() []byte {
-			return make([]byte, bufferLength)
-		}),
-		WithBufferRecycleFunc(func(buffer []byte) {
-		}),
-	)
+	session := NewSession(conn, WithRole(RoleClient), WithBufferSize(bufferLength))
 
 	for i := 0; i < 4; i++ {
 		stream, err := session.OpenStream()

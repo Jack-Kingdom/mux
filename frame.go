@@ -20,6 +20,7 @@ const (
 	sizeOfCmd      = 1
 	sizeOfStreamId = 4
 	sizeOfLength   = 2
+	headerSize     = sizeOfCmd + sizeOfStreamId + sizeOfLength
 )
 
 var (
@@ -56,14 +57,16 @@ func (frame *Frame) Close() error {
 }
 
 func NewFrame(cmd cmdType, streamId uint32, data []byte) *Frame {
+	return NewFrameContext(context.TODO(), cmd, streamId, data)
+}
 
-	ctx, cancel := context.WithCancel(context.TODO())
-
+func NewFrameContext(ctx context.Context, cmd cmdType, streamId uint32, data []byte) *Frame {
+	currentCtx, cancel := context.WithCancel(ctx)
 	return &Frame{
 		cmd:      cmd,
 		streamId: streamId,
 		data:     data,
-		ctx:      ctx,
+		ctx:      currentCtx,
 		cancel:   cancel,
 	}
 }
@@ -73,7 +76,6 @@ func (frame *Frame) Marshal(buffer []byte) (int, error) {
 		return 0, err
 	}
 
-	headerSize := sizeOfCmd + sizeOfStreamId + sizeOfLength
 	totalSize := headerSize + len(frame.data)
 	if len(buffer) < totalSize {
 		return 0, BufferSizeLimitErr
@@ -86,7 +88,6 @@ func (frame *Frame) Marshal(buffer []byte) (int, error) {
 }
 
 func (frame *Frame) UnMarshal(buffer []byte) (int, error) {
-	headerSize := sizeOfCmd + sizeOfStreamId + sizeOfLength
 	if len(buffer) < headerSize {
 		return 0, errors.Wrap(BufferSizeLimitErr, "buffer length less than headerSize")
 	}
