@@ -3,7 +3,6 @@ package mux
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"github.com/pkg/errors"
 )
 
@@ -12,7 +11,7 @@ type cmdType byte
 const (
 	cmdSYN cmdType = iota // stream open
 	cmdFIN                // stream close, a.k.a EOF mark
-	cmdPSH                // data push
+	cmdPSH                // payload push
 	cmdNOP                // no operation
 )
 
@@ -29,11 +28,12 @@ var (
 )
 
 type Frame struct {
-	cmd      cmdType
-	streamId uint32
-	data     []byte
-	ctx      context.Context
-	cancel   context.CancelFunc
+	cmd        cmdType
+	streamId   uint32
+	dataLength uint16	// Limit: 2^16 payload size less than 64KB
+	payload    []byte
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 func (frame *Frame) Cmd() byte {
@@ -51,13 +51,8 @@ func (frame *Frame) checkCmd() error {
 	return nil
 }
 
-func (frame *Frame) Close() error {
+func (frame *Frame) Close() {
 	frame.cancel()
-	return nil
-}
-
-func NewFrame(cmd cmdType, streamId uint32, data []byte) *Frame {
-	return NewFrameContext(context.TODO(), cmd, streamId, data)
 }
 
 func NewFrameContext(ctx context.Context, cmd cmdType, streamId uint32, data []byte) *Frame {
@@ -65,31 +60,31 @@ func NewFrameContext(ctx context.Context, cmd cmdType, streamId uint32, data []b
 	return &Frame{
 		cmd:      cmd,
 		streamId: streamId,
-		data:     data,
+		dataLength: uint16(len(data)),
+		payload:  data,
 		ctx:      currentCtx,
 		cancel:   cancel,
 	}
 }
 
-func (frame *Frame) Marshal(buffer []byte) (int, error) {
+func (frame *Frame) MarshalHeader(buffer []byte) (int, error) {
 	if err := frame.checkCmd(); err != nil {
 		return 0, err
 	}
 
-	totalSize := headerSize + len(frame.data)
-	if len(buffer) < totalSize {
+	if len(buffer) < headerSize {
 		return 0, BufferSizeLimitErr
 	}
+
 	buffer[0] = frame.Cmd()
 	binary.BigEndian.PutUint32(buffer[sizeOfCmd:], frame.streamId)
-	binary.BigEndian.PutUint16(buffer[sizeOfCmd+sizeOfStreamId:], uint16(len(frame.data)))
-	copy(buffer[headerSize:], frame.data)
-	return totalSize, nil
+	binary.BigEndian.PutUint16(buffer[sizeOfCmd+sizeOfStreamId:], frame.dataLength)
+	return headerSize, nil
 }
 
-func (frame *Frame) UnMarshal(buffer []byte) (int, error) {
+func (frame *Frame) UnMarshalHeader(buffer []byte) (int, error) {
 	if len(buffer) < headerSize {
-		return 0, errors.Wrap(BufferSizeLimitErr, "buffer length less than headerSize")
+		return 0, BufferSizeLimitErr
 	}
 
 	frame.cmd = cmdType(buffer[0])
@@ -98,13 +93,6 @@ func (frame *Frame) UnMarshal(buffer []byte) (int, error) {
 	}
 
 	frame.streamId = binary.BigEndian.Uint32(buffer[sizeOfCmd:])
-
-	dataLength := int(binary.BigEndian.Uint16(buffer[sizeOfCmd+sizeOfStreamId:]))
-	if len(buffer) < headerSize+dataLength {
-		return 0, errors.Wrap(BufferSizeLimitErr, fmt.Sprintf("buffer length %d less than protocol showed %d", len(buffer), headerSize+dataLength))
-	}
-	frame.data = buffer[headerSize : headerSize+dataLength]
-	used := headerSize + dataLength
-
-	return used, nil
+	frame.dataLength = binary.BigEndian.Uint16(buffer[sizeOfCmd+sizeOfStreamId:])
+	return headerSize, nil
 }

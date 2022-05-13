@@ -42,17 +42,17 @@ func TestSession(t *testing.T) {
 		}
 		t.Logf("conn accept.")
 
-		session := NewSession(conn, WithRole(RoleServer), WithBufferSize(bufferLength))
+		serverSession := NewSession(conn, WithRole(RoleServer), WithBufferSize(bufferLength))
 
 		for {
-			stream, err := session.AcceptStream()
+			stream, err := serverSession.AcceptStream()
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			t.Logf("stream %d accept.", stream.id)
 
-			buffer := session.getBuffer()
+			buffer := serverSession.getBuffer()
 			n, err := stream.Read(buffer)
 			if err != nil {
 				t.Error(err)
@@ -83,10 +83,10 @@ func TestSession(t *testing.T) {
 		return
 	}
 
-	session := NewSession(conn, WithRole(RoleClient), WithBufferSize(bufferLength))
+	clientSession := NewSession(conn, WithRole(RoleClient), WithKeepAliveInterval(10), WithBufferSize(bufferLength))
 
 	for i := 0; i < 4; i++ {
-		stream, err := session.OpenStream()
+		stream, err := clientSession.OpenStream()
 		if err != nil {
 			t.Error(err)
 			return

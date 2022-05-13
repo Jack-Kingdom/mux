@@ -18,7 +18,6 @@ var (
 
 type Stream struct {
 	id            uint32
-	syn           bool // if sync false, write sync cmd to server create new stream with data
 	session       *Session
 	readyReadChan chan *Frame
 	readDeadline  time.Time
@@ -27,21 +26,12 @@ type Stream struct {
 	cancel        context.CancelFunc
 }
 
-// NewStream create a new stream
-func NewStream(streamId uint32, syn bool, session *Session) *Stream {
-	ctx, cancel := context.WithCancel(session.ctx)
-	return &Stream{
-		id:            streamId,
-		syn:           syn,
-		session:       session,
-		readyReadChan: make(chan *Frame),
-		ctx:           ctx,
-		cancel:        cancel,
-	}
+func (stream *Stream) Done() <-chan struct{} {
+	return stream.ctx.Done()
 }
 
-func (stream *Stream) writeFrame(cmd cmdType, buffer []byte) (int, error) {
-	frame := NewFrame(cmd, stream.id, buffer)
+func (stream *Stream) Write(buffer []byte) (int, error) {
+	frame := NewFrameContext(stream.ctx, cmdPSH, stream.id, buffer)
 
 	var timeout *time.Timer
 	if stream.readDeadline != (time.Time{}) {
@@ -52,12 +42,12 @@ func (stream *Stream) writeFrame(cmd cmdType, buffer []byte) (int, error) {
 	defer timeout.Stop()
 
 	select {
-	case <-stream.session.ctx.Done():
-		return 0, stream.session.err
+	case <-stream.ctx.Done():
+		return 0, ErrStreamClosed
 	case <-timeout.C:
 		return 0, ErrWriteTimeout
 	case stream.session.readyWriteChan <- frame:
-		// 直接返回的话可能会导致 frame 中 data 的 buffer 被回收覆盖
+		// 直接返回的话可能会导致 frame 中 payload 的 buffer 被回收覆盖
 		select {
 		case <-stream.ctx.Done():
 			return 0, ErrStreamClosed
@@ -65,22 +55,6 @@ func (stream *Stream) writeFrame(cmd cmdType, buffer []byte) (int, error) {
 			return len(buffer), nil
 		}
 	}
-}
-
-func (stream *Stream) Done() <-chan struct{} {
-	return stream.ctx.Done()
-}
-
-func (stream *Stream) Write(buffer []byte) (int, error) {
-	var cmd cmdType
-	if stream.syn {
-		cmd = cmdPSH
-	} else {
-		cmd = cmdSYN
-		stream.syn = true
-	}
-
-	return stream.writeFrame(cmd, buffer)
 }
 
 func (stream *Stream) Read(buffer []byte) (int, error) {
@@ -98,12 +72,13 @@ func (stream *Stream) Read(buffer []byte) (int, error) {
 	case <-timeout.C:
 		return 0, ErrReadTimeout
 	case frame := <-stream.readyReadChan:
-		if len(buffer) < len(frame.data) {
+		if len(buffer) < int(frame.dataLength) {
+			frame.Close()
 			return 0, ErrReadBufferLimited
 		}
-		copy(buffer, frame.data)
-		_ = frame.Close()
-		return len(frame.data), nil
+		copy(buffer, frame.payload)
+		frame.Close()
+		return len(frame.payload), nil
 	}
 }
 
@@ -116,11 +91,22 @@ func (stream *Stream) IsClose() bool {
 	}
 }
 
-func (stream *Stream) Close() error {
-	_, _ = stream.writeFrame(cmdFIN, nil)
-	stream.cancel()
-	_ = stream.session.unregisterStream(stream)
-	return nil
+func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
+	err := stream.session.unregisterStream(stream)
+	if err !=nil {
+		if errors.Is(err, StreamIdNotFoundErr) {	// 此处由 session 关闭了，跳过即可
+			return nil
+		}
+		return err
+	}
+
+	select {
+	case <-stream.ctx.Done():
+		return ErrStreamClosed
+	case stream.session.readyWriteChan <- NewFrameContext(stream.ctx, cmdFIN, stream.id, nil):
+		stream.cancel()
+		return nil
+	}
 }
 
 func (stream *Stream) SetReadDeadline(t time.Time) error {

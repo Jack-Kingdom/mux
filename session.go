@@ -21,9 +21,20 @@ var (
 type roleType uint8
 
 const (
-	RoleClient roleType = 1 + iota // 客户端为奇数，服务器端为偶数
+	RoleClient roleType = 1 + iota // 客户端为奇数，服务器端为偶数，这里区分 client 与 server 主要是为了防止 streamId 冲突，在传输过程中二者是对等的
 	RoleServer
 )
+
+func (rule roleType) String() string {
+	switch rule {
+	case RoleClient:
+		return "client"
+	case RoleServer:
+		return "server"
+	default:
+		return "unknown"
+	}
+}
 
 type Session struct {
 	conn io.ReadWriteCloser
@@ -147,7 +158,6 @@ func (session *Session) StreamCount() int {
 get usable streamId
 */
 func (session *Session) genStreamId() uint32 {
-
 	session.streamIdMutex.Lock()
 	defer session.streamIdMutex.Unlock()
 
@@ -206,6 +216,11 @@ func (session *Session) recvLoop() {
 	buffer := session.getBuffer()
 	defer session.putBuffer(buffer)
 
+	if len(buffer) < headerSize {
+		session.CloseWithErr(BufferSizeLimitErr)
+		return
+	}
+
 	ttl := 30 * 24 * time.Hour // 这里先假设一个很长的时间
 	if session.keepAliveSwitch {
 		ttl = time.Duration(session.keepAliveTTL) * time.Second
@@ -222,70 +237,88 @@ func (session *Session) recvLoop() {
 			session.CloseWithErr(SessionTTLExceed)
 			return
 		default:
-			n, err := session.conn.Read(buffer)
+			// 首先处理 header
+			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
 				session.CloseWithErr(errors.Wrap(ConnReadWriteOpsErr, err.Error()))
 				return
 			}
 
-			frame := NewFrame(cmdNOP, 0, nil)
-			_, err = frame.UnMarshal(buffer[:n])
+			var header Frame
+
+			_, err = header.UnMarshalHeader(buffer[:n])
 			if err != nil {
-				session.CloseWithErr(errors.Wrap(err, "err on unmarshal buffer to frame"))
+				session.CloseWithErr(errors.Wrap(err, "err on unmarshal header to frame"))
 				return
 			}
 
-			zap.L().Debug("read frame", zap.Uint32("stream", frame.streamId), zap.Uint8("cmd", frame.Cmd()), zap.ByteString("data", frame.data))
-
-			switch frame.cmd {
-			case cmdSYN, cmdPSH:
-				if frame.cmd == cmdSYN { // syn frame create stream first
-					synFrame := NewFrame(cmdSYN, frame.streamId, nil)
+			switch header.cmd {
+			case cmdSYN:
+				synFrame := NewFrameContext(session.ctx, cmdSYN, header.streamId, nil)
+				select {
+				case <-session.ctx.Done():
+					return
+				case session.readyAcceptChan <- synFrame:
 					select {
 					case <-session.ctx.Done():
-						return
-					case session.readyAcceptChan <- synFrame:
-						select {
-						case <-session.ctx.Done():
-						case <-synFrame.ctx.Done():
-						}
+					case <-synFrame.ctx.Done():
 					}
 				}
+			case cmdPSH:
+				// 注意这个地方需要处理拆包和粘包的问题
+				if len(buffer) < int(header.dataLength) {
+					session.CloseWithErr(BufferSizeLimitErr)
+					return
+				}
 
-				stream, err := session.getStream(frame.streamId)
-				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
-					// 此处没有拿到 stream，可能被关闭了，此时通知远程进行关闭
-					// 注意这个地方可能会重复发多个包
-					select {
-					case <-session.ctx.Done():
-					case session.readyWriteChan <- NewFrame(cmdFIN, frame.streamId, nil):
+				hasRead := 0
+				for hasRead < int(header.dataLength) {
+					n, err := session.conn.Read(buffer[hasRead:header.dataLength])
+					if err != nil {
+						session.CloseWithErr(errors.Wrap(ConnReadWriteOpsErr, err.Error()))
+						return
 					}
-					zap.L().Error("stream not found", zap.Uint32("streamId", frame.streamId))
+
+					hasRead += n
+				}
+
+				dataFrame := NewFrameContext(session.ctx, cmdPSH, header.streamId, buffer[:header.dataLength])
+				stream, err := session.getStream(header.streamId)
+				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
+					// 此处没有拿到 stream，可能被关闭了，主动关闭连接时需通知远程进行关闭，此处丢弃
+					dataFrame.Close()
 					continue
 				}
 
 				select {
 				case <-session.ctx.Done():
 				case <-stream.ctx.Done():
-				case stream.readyReadChan <- frame:
+				case stream.readyReadChan <- dataFrame:
 					// 这里需要等待 frame 被消耗掉
 					select {
 					case <-session.ctx.Done():
 					case <-stream.ctx.Done():
-					case <-frame.ctx.Done():
+					case <-dataFrame.ctx.Done():
 					}
 				}
 
-			case cmdFIN:
-				stream, err := session.getStream(frame.streamId)
+			case cmdFIN: // 收到远程的关闭通知，被动关闭
+				stream, err := session.getStream(header.streamId)
 				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
 					// 这个 stream 可能已经被关闭了,直接返回就可以了
 					continue
 				}
-				stream.cancel()
-				_ = session.unregisterStream(stream)
+				select {
+				case <-stream.Done():
+					return
+				default:
+					// 被动关闭，不需要通知 remote
+					stream.cancel()
+					_ = session.unregisterStream(stream)
+				}
+
 			case cmdNOP:
-				zap.L().Debug("ttl pkg received")
+				zap.L().Debug("ttl pkg received", zap.String("rule", session.role.String()))
 				ttlTicker.Reset(ttl)
 			}
 		}
@@ -301,21 +334,26 @@ func (session *Session) sendLoop() {
 		case <-session.ctx.Done():
 			return
 		case frame := <-session.readyWriteChan:
-			n, err := frame.Marshal(buffer)
+			// write header
+			n, err := frame.MarshalHeader(buffer)
 			if err != nil {
 				session.CloseWithErr(err)
 				return
 			}
-
 			_, err = session.conn.Write(buffer[:n])
 			if err != nil {
-				session.CloseWithErr(err)
+				session.CloseWithErr(errors.Wrap(err, "err on write frame header"))
 				return
 			}
 
-			zap.L().Debug("write frame", zap.Uint32("stream", frame.streamId), zap.Uint8("cmd", frame.Cmd()), zap.ByteString("data", frame.data))
-
-			_ = frame.Close() // 标记当前 frame 不再使用了
+			if frame.cmd == cmdPSH {
+				n, err = session.conn.Write(frame.payload[:frame.dataLength])
+				if err != nil {
+					session.CloseWithErr(errors.Wrap(err, "err on write frame payload"))
+					return
+				}
+			}
+			frame.Close() // 标记当前 frame 处理完毕
 		}
 	}
 }
@@ -330,18 +368,17 @@ func (session *Session) heartBeatLoop() {
 		case <-session.ctx.Done():
 			return
 		case <-ticker.C:
-			frame := NewFrame(cmdNOP, 0, nil)
+			frame := NewFrameContext(session.ctx, cmdNOP, 0, nil)
 			session.readyWriteChan <- frame
-			zap.L().Debug("ttl pkg sent")
+			zap.L().Debug("ttl pkg sent", zap.String("role", session.role.String()))
 		}
 	}
 }
 
-func (session *Session) newStream(streamId uint32, syn bool) *Stream {
+func (session *Session) newStream(streamId uint32) *Stream {
 	ctx, cancel := context.WithCancel(session.ctx)
 	return &Stream{
 		id:            streamId,
-		syn:           syn,
 		session:       session,
 		readyReadChan: make(chan *Frame),
 		ctx:           ctx,
@@ -378,19 +415,31 @@ func (session *Session) unregisterStream(stream *Stream) error {
 
 	if _, ok := session.streams[stream.id]; ok {
 		delete(session.streams, stream.id)
+		return nil
+	} else {
+		return StreamIdNotFoundErr
 	}
-
-	return nil
 }
 
+// OpenStream 创建一个新的 stream
 func (session *Session) OpenStream() (*Stream, error) {
-	streamId := session.genStreamId()
-	stream := session.newStream(streamId, false)
-	err := session.registerStream(stream)
-	if err != nil {
-		return nil, err
+	if session.IsClose() {
+		return nil, SessionClosedErr
 	}
-	return stream, err
+
+	streamId := session.genStreamId()
+
+	select {
+	case <-session.ctx.Done():
+		return nil, SessionClosedErr
+	case session.readyWriteChan <- NewFrameContext(session.ctx, cmdSYN, streamId, nil):
+		stream := session.newStream(streamId)
+		err := session.registerStream(stream)
+		if err != nil {
+			return nil, err
+		}
+		return stream, nil
+	}
 }
 
 func (session *Session) Open() (io.ReadWriteCloser, error) {
@@ -402,12 +451,12 @@ func (session *Session) AcceptStream() (*Stream, error) {
 	case <-session.ctx.Done():
 		return nil, errors.Wrap(SessionClosedErr, session.err.Error())
 	case frame := <-session.readyAcceptChan:
-		stream := session.newStream(frame.streamId, true)
+		stream := session.newStream(frame.streamId)
 		err := session.registerStream(stream)
 		if err != nil {
 			return nil, err
 		}
-		_ = frame.Close()
+		frame.Close()
 		return stream, nil
 	}
 }
