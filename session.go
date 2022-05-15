@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,9 +46,7 @@ type Session struct {
 
 	streams     map[uint32]*Stream
 	streamMutex sync.Mutex
-
 	streamIdCounter uint32
-	streamIdMutex   sync.Mutex
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -180,13 +179,7 @@ func (session *Session) StreamCount() int {
 get usable streamId
 */
 func (session *Session) genStreamId() uint32 {
-	session.streamIdMutex.Lock()
-	defer session.streamIdMutex.Unlock()
-
-	current := session.streamIdCounter
-	session.streamIdCounter += 2
-
-	return current
+	return atomic.AddUint32(&session.streamIdCounter, 2)
 }
 
 func (session *Session) getBuffer() []byte {
