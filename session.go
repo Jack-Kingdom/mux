@@ -6,6 +6,7 @@ import (
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"io"
+	"net"
 	"sync"
 	"time"
 )
@@ -37,7 +38,10 @@ func (rule roleType) String() string {
 }
 
 type Session struct {
-	conn io.ReadWriteCloser
+	conn             net.Conn
+	readTimeout      time.Duration
+	writeTimeout     time.Duration
+	readWriteTimeout time.Duration
 
 	streams     map[uint32]*Stream
 	streamMutex sync.Mutex
@@ -68,6 +72,24 @@ type Session struct {
 type Option func(*Session)
 type BufferAllocFunc func() []byte
 type BufferRecycleFunc func([]byte)
+
+func WithReadTimeout(readTimeout time.Duration) Option {
+	return func(s *Session) {
+		s.readTimeout = readTimeout
+	}
+}
+
+func WithWriteTimeout(writeTimeout time.Duration) Option {
+	return func(s *Session) {
+		s.writeTimeout = writeTimeout
+	}
+}
+
+func WithReadWriteTimeout(readWriteTimeout time.Duration) Option {
+	return func(s *Session) {
+		s.readWriteTimeout = readWriteTimeout
+	}
+}
 
 func WithRole(role roleType) Option {
 	return func(session *Session) {
@@ -111,7 +133,7 @@ func WithBufferRecycleFunc(f BufferRecycleFunc) Option {
 	}
 }
 
-func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
+func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *Session {
 	currentCtx, cancel := context.WithCancel(ctx)
 	session := &Session{
 		conn:            conn,
@@ -146,7 +168,7 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 	return session
 }
 
-func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
+func NewSession(conn net.Conn, options ...Option) *Session {
 	return NewSessionContext(context.TODO(), conn, options...)
 }
 
@@ -212,6 +234,26 @@ func (session *Session) CloseWithErr(err error) {
 	_ = session.Close()
 }
 
+func (session *Session) configureReadDeadline() {
+	if session.readTimeout > 0 {
+		_ = session.conn.SetReadDeadline(time.Now().Add(session.readTimeout))
+	}else if session.readWriteTimeout > 0 {
+		_ = session.conn.SetReadDeadline(time.Now().Add(session.readWriteTimeout))
+	}else {
+		_ = session.conn.SetReadDeadline(time.Time{})
+	}
+}
+
+func (session *Session) configureWriteDeadline() {
+	if session.writeTimeout > 0 {
+		_ = session.conn.SetWriteDeadline(time.Now().Add(session.writeTimeout))
+	}else if session.readWriteTimeout > 0 {
+		_ = session.conn.SetWriteDeadline(time.Now().Add(session.readWriteTimeout))
+	}else {
+		_ = session.conn.SetWriteDeadline(time.Time{})
+	}
+}
+
 func (session *Session) recvLoop() {
 	buffer := session.getBuffer()
 	defer session.putBuffer(buffer)
@@ -238,6 +280,7 @@ func (session *Session) recvLoop() {
 			return
 		default:
 			// 首先处理 header
+			session.configureReadDeadline()
 			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
 				session.CloseWithErr(errors.Wrap(ConnReadWriteOpsErr, err.Error()))
@@ -273,6 +316,7 @@ func (session *Session) recvLoop() {
 
 				hasRead := 0
 				for hasRead < int(header.dataLength) {
+					session.configureReadDeadline()
 					n, err := session.conn.Read(buffer[hasRead:header.dataLength])
 					if err != nil {
 						session.CloseWithErr(errors.Wrap(ConnReadWriteOpsErr, err.Error()))
@@ -340,6 +384,8 @@ func (session *Session) sendLoop() {
 				session.CloseWithErr(err)
 				return
 			}
+
+			session.configureWriteDeadline()
 			_, err = session.conn.Write(buffer[:n])
 			if err != nil {
 				session.CloseWithErr(errors.Wrap(err, "err on write frame header"))
@@ -347,6 +393,7 @@ func (session *Session) sendLoop() {
 			}
 
 			if frame.cmd == cmdPSH {
+				session.configureWriteDeadline()
 				n, err = session.conn.Write(frame.payload[:frame.dataLength])
 				if err != nil {
 					session.CloseWithErr(errors.Wrap(err, "err on write frame payload"))
