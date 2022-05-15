@@ -5,7 +5,6 @@ import (
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -482,7 +481,7 @@ func (session *Session) OpenStream() (*Stream, error) {
 	}
 }
 
-func (session *Session) Open() (io.ReadWriteCloser, error) {
+func (session *Session) Open() (net.Conn, error) {
 	return session.OpenStream()
 }
 
@@ -501,6 +500,6 @@ func (session *Session) AcceptStream() (*Stream, error) {
 	}
 }
 
-func (session *Session) Accept() (io.ReadWriteCloser, error) {
+func (session *Session) Accept() (net.Conn, error) {
 	return session.AcceptStream()
 }
