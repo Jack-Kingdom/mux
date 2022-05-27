@@ -287,21 +287,23 @@ func (session *Session) recvLoop() {
 				return
 			}
 
-			ttlTicker.Reset(session.transportTTL)	// 收到数据包，重置 ttl
+			ttlTicker.Reset(session.transportTTL) // 收到数据包，重置 ttl
 
 			switch header.cmd {
-			case cmdSYN:
-				synFrame := NewFrameContext(session.ctx, cmdSYN, header.streamId, nil)
-				select {
-				case <-session.ctx.Done():
-					return
-				case session.readyAcceptChan <- synFrame:
+			case cmdSYN, cmdPSH:
+				if header.cmd == cmdSYN {
+					synFrame := NewFrameContext(session.ctx, cmdSYN, header.streamId, nil)
 					select {
 					case <-session.ctx.Done():
-					case <-synFrame.ctx.Done():
+						return
+					case session.readyAcceptChan <- synFrame:
+						select {
+						case <-session.ctx.Done():
+						case <-synFrame.ctx.Done():
+						}
 					}
 				}
-			case cmdPSH:
+
 				// 注意这个地方需要处理拆包和粘包的问题
 				if len(buffer) < int(header.dataLength) {
 					session.CloseWithErr(BufferSizeLimitErr)
@@ -387,7 +389,7 @@ func (session *Session) sendLoop() {
 				return
 			}
 
-			if frame.cmd == cmdPSH {
+			if frame.cmd == cmdPSH || frame.cmd == cmdSYN {
 				session.configureWriteDeadline()
 				n, err = session.conn.Write(frame.payload[:frame.dataLength])
 				if err != nil {
@@ -474,18 +476,12 @@ func (session *Session) OpenStream() (*Stream, error) {
 	}
 
 	streamId := session.genStreamId()
-
-	select {
-	case <-session.ctx.Done():
-		return nil, ErrSessionClosed
-	case session.readyWriteChan <- NewFrameContext(session.ctx, cmdSYN, streamId, nil):
-		stream := session.newStream(streamId)
-		err := session.registerStream(stream)
-		if err != nil {
-			return nil, err
-		}
-		return stream, nil
+	stream := session.newStream(streamId)
+	err := session.registerStream(stream)
+	if err != nil {
+		return nil, err
 	}
+	return stream, nil
 }
 
 func (session *Session) Open() (net.Conn, error) {
@@ -503,6 +499,7 @@ func (session *Session) AcceptStream() (*Stream, error) {
 			return nil, err
 		}
 		frame.Close()
+		stream.synced = true  // 接收 remote 的连接，不需要再向 remote 发送 SYN
 		return stream, nil
 	}
 }
