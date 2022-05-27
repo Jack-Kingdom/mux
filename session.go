@@ -4,7 +4,6 @@ import (
 	"context"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
 	"github.com/pkg/errors"
-	"go.uber.org/zap"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -26,8 +25,8 @@ const (
 	RoleServer
 )
 
-func (rule roleType) String() string {
-	switch rule {
+func (role roleType) String() string {
+	switch role {
 	case RoleClient:
 		return "client"
 	case RoleServer:
@@ -43,8 +42,8 @@ type Session struct {
 	writeTimeout     time.Duration
 	readWriteTimeout time.Duration
 
-	streams     map[uint32]*Stream
-	streamMutex sync.Mutex
+	streams         map[uint32]*Stream
+	streamMutex     sync.Mutex
 	streamIdCounter uint32
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
@@ -55,13 +54,19 @@ type Session struct {
 	cancel context.CancelFunc
 
 	// session config
-	role              roleType
-	keepAliveSwitch   bool
-	keepAliveInterval uint8
-	keepAliveTTL      uint8
-	bufferSize        int
-	bufferAlloc       BufferAllocFunc
-	bufferRecycle     BufferRecycleFunc
+	role roleType
+
+	// heartbeat config
+	keepAliveSwitch        bool
+	keepAliveInterval      uint8
+	keepAliveTTL           uint8
+	heartBeatSentTimestamp time.Time     // 发送心跳包的时间戳
+	transportRtt           time.Duration // 根据心跳包计算出的 rtt
+
+	// session buffer config
+	bufferSize    int
+	bufferAlloc   BufferAllocFunc
+	bufferRecycle BufferRecycleFunc
 
 	// private variable
 	createdAt time.Time
@@ -229,9 +234,9 @@ func (session *Session) CloseWithErr(err error) {
 func (session *Session) configureReadDeadline() {
 	if session.readTimeout > 0 {
 		_ = session.conn.SetReadDeadline(time.Now().Add(session.readTimeout))
-	}else if session.readWriteTimeout > 0 {
+	} else if session.readWriteTimeout > 0 {
 		_ = session.conn.SetReadDeadline(time.Now().Add(session.readWriteTimeout))
-	}else {
+	} else {
 		_ = session.conn.SetReadDeadline(time.Time{})
 	}
 }
@@ -239,9 +244,9 @@ func (session *Session) configureReadDeadline() {
 func (session *Session) configureWriteDeadline() {
 	if session.writeTimeout > 0 {
 		_ = session.conn.SetWriteDeadline(time.Now().Add(session.writeTimeout))
-	}else if session.readWriteTimeout > 0 {
+	} else if session.readWriteTimeout > 0 {
 		_ = session.conn.SetWriteDeadline(time.Now().Add(session.readWriteTimeout))
-	}else {
+	} else {
 		_ = session.conn.SetWriteDeadline(time.Time{})
 	}
 }
@@ -352,10 +357,12 @@ func (session *Session) recvLoop() {
 					stream.cancel()
 					_ = session.unregisterStream(stream)
 				}
-
-			case cmdNOP:
-				zap.L().Debug("ttl pkg received", zap.String("rule", session.role.String()))
+			case cmdPING:
+				frame := NewFrameContext(session.ctx, cmdPONG, 0, nil)
+				session.readyWriteChan <- frame
+			case cmdPONG:
 				ttlTicker.Reset(ttl)
+				session.transportRtt = time.Now().Sub(session.heartBeatSentTimestamp)
 			}
 		}
 	}
@@ -407,9 +414,9 @@ func (session *Session) heartBeatLoop() {
 		case <-session.ctx.Done():
 			return
 		case <-ticker.C:
-			frame := NewFrameContext(session.ctx, cmdNOP, 0, nil)
+			frame := NewFrameContext(session.ctx, cmdPING, 0, nil)
 			session.readyWriteChan <- frame
-			zap.L().Debug("ttl pkg sent", zap.String("role", session.role.String()))
+			session.heartBeatSentTimestamp = time.Now()
 		}
 	}
 }

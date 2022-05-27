@@ -9,10 +9,12 @@ import (
 type cmdType byte
 
 const (
-	cmdSYN cmdType = iota // stream open
-	cmdFIN                // stream close, a.k.a EOF mark
-	cmdPSH                // payload push
-	cmdNOP                // no operation
+	cmdSYN  cmdType = iota // stream open
+	cmdFIN                 // stream close, a.k.a EOF mark
+	cmdPSH                 // payload push
+	cmdNOP                 // no operation
+	cmdPING                // ping
+	cmdPONG                // pong
 )
 
 const (
@@ -30,7 +32,7 @@ var (
 type Frame struct {
 	cmd        cmdType
 	streamId   uint32
-	dataLength uint16	// Limit: 2^16 payload size less than 64KB
+	dataLength uint16 // Limit: 2^16 payload size less than 64KB
 	payload    []byte
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -58,12 +60,12 @@ func (frame *Frame) Close() {
 func NewFrameContext(ctx context.Context, cmd cmdType, streamId uint32, data []byte) *Frame {
 	currentCtx, cancel := context.WithCancel(ctx)
 	return &Frame{
-		cmd:      cmd,
-		streamId: streamId,
+		cmd:        cmd,
+		streamId:   streamId,
 		dataLength: uint16(len(data)),
-		payload:  data,
-		ctx:      currentCtx,
-		cancel:   cancel,
+		payload:    data,
+		ctx:        currentCtx,
+		cancel:     cancel,
 	}
 }
 
