@@ -54,12 +54,12 @@ type Session struct {
 	cancel context.CancelFunc
 
 	// session config
-	role roleType
+	role         roleType
+	transportTTL time.Duration
 
 	// heartbeat config
-	keepAliveSwitch        bool
-	keepAliveInterval      uint8
-	keepAliveTTL           uint8
+	heartBeatSwitch        bool
+	heartBeatInterval      time.Duration
 	heartBeatSentTimestamp time.Time     // 发送心跳包的时间戳
 	transportRtt           time.Duration // 根据心跳包计算出的 rtt
 
@@ -100,21 +100,21 @@ func WithRole(role roleType) Option {
 	}
 }
 
-func WithKeepAliveSwitch(choose bool) Option {
+func WithHeartBeatSwitch(choose bool) Option {
 	return func(session *Session) {
-		session.keepAliveSwitch = choose
+		session.heartBeatSwitch = choose
 	}
 }
 
-func WithKeepAliveInterval(interval uint8) Option {
+func WithHeartBeatInterval(interval time.Duration) Option {
 	return func(session *Session) {
-		session.keepAliveInterval = interval
+		session.heartBeatInterval = interval
 	}
 }
 
-func WithKeepAliveTTL(ttl uint8) Option {
+func WithTTL(ttl time.Duration) Option {
 	return func(session *Session) {
-		session.keepAliveTTL = ttl
+		session.transportTTL = ttl
 	}
 }
 
@@ -148,9 +148,9 @@ func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *S
 		cancel:          cancel,
 
 		role:              RoleClient,
-		keepAliveSwitch:   false,
-		keepAliveInterval: 30,
-		keepAliveTTL:      90,
+		transportTTL:      60 * time.Second,
+		heartBeatSwitch:   false,
+		heartBeatInterval: 30 * time.Second,
 		bufferSize:        1024,
 		createdAt:         time.Now(),
 	}
@@ -164,7 +164,7 @@ func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *S
 	// 维护任务
 	go session.recvLoop()
 	go session.sendLoop()
-	if session.keepAliveSwitch {
+	if session.heartBeatSwitch {
 		go session.heartBeatLoop()
 	}
 
@@ -260,12 +260,7 @@ func (session *Session) recvLoop() {
 		return
 	}
 
-	ttl := 30 * 24 * time.Hour // 这里先假设一个很长的时间
-	if session.keepAliveSwitch {
-		ttl = time.Duration(session.keepAliveTTL) * time.Second
-	}
-
-	ttlTicker := time.NewTicker(ttl)
+	ttlTicker := time.NewTicker(session.transportTTL)
 	defer ttlTicker.Stop()
 
 	for {
@@ -291,6 +286,8 @@ func (session *Session) recvLoop() {
 				session.CloseWithErr(errors.Wrap(err, "err on unmarshal header to frame"))
 				return
 			}
+
+			ttlTicker.Reset(session.transportTTL)	// 收到数据包，重置 ttl
 
 			switch header.cmd {
 			case cmdSYN:
@@ -361,7 +358,6 @@ func (session *Session) recvLoop() {
 				frame := NewFrameContext(session.ctx, cmdPONG, 0, nil)
 				session.readyWriteChan <- frame
 			case cmdPONG:
-				ttlTicker.Reset(ttl)
 				session.transportRtt = time.Now().Sub(session.heartBeatSentTimestamp)
 			}
 		}
@@ -406,7 +402,7 @@ func (session *Session) sendLoop() {
 
 // 持续地发送心跳包
 func (session *Session) heartBeatLoop() {
-	ticker := time.NewTicker(time.Duration(session.keepAliveInterval) * time.Second)
+	ticker := time.NewTicker(time.Duration(session.heartBeatInterval) * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -419,6 +415,10 @@ func (session *Session) heartBeatLoop() {
 			session.heartBeatSentTimestamp = time.Now()
 		}
 	}
+}
+
+func (session *Session) RTT() time.Duration {
+	return session.transportRtt
 }
 
 func (session *Session) newStream(streamId uint32) *Stream {

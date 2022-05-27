@@ -7,6 +7,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"testing"
+	"time"
 )
 
 const (
@@ -83,7 +84,7 @@ func TestSession(t *testing.T) {
 		return
 	}
 
-	clientSession := NewSession(conn, WithRole(RoleClient), WithKeepAliveInterval(10), WithBufferSize(bufferLength))
+	clientSession := NewSession(conn, WithRole(RoleClient), WithHeartBeatInterval(10*time.Second), WithBufferSize(bufferLength))
 
 	for i := 0; i < 4; i++ {
 		stream, err := clientSession.OpenStream()

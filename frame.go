@@ -12,7 +12,6 @@ const (
 	cmdSYN  cmdType = iota // stream open
 	cmdFIN                 // stream close, a.k.a EOF mark
 	cmdPSH                 // payload push
-	cmdNOP                 // no operation
 	cmdPING                // ping
 	cmdPONG                // pong
 )
@@ -47,10 +46,12 @@ func (frame *Frame) StreamId() uint32 {
 }
 
 func (frame *Frame) checkCmd() error {
-	if frame.cmd != cmdSYN && frame.cmd != cmdFIN && frame.cmd != cmdPSH && frame.cmd != cmdNOP {
+	switch frame.cmd {
+	case cmdSYN, cmdFIN, cmdPSH, cmdPING, cmdPONG:
+		return nil
+	default:
 		return UnknownCmdErr
 	}
-	return nil
 }
 
 func (frame *Frame) Close() {
