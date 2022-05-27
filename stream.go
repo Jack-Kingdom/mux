@@ -94,7 +94,7 @@ func (stream *Stream) IsClose() bool {
 func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
 	err := stream.session.unregisterStream(stream)
 	if err !=nil {
-		if errors.Is(err, StreamIdNotFoundErr) {	// 此处由 session 关闭了，跳过即可
+		if errors.Is(err, ErrStreamIdNotFound) { // 此处由 session 关闭了，跳过即可
 			return nil
 		}
 		return err

@@ -11,11 +11,11 @@ import (
 )
 
 var (
-	ConnReadWriteOpsErr = errors.New("conn read write ops err")
-	SessionClosedErr    = errors.New("session closed")
-	SessionTTLExceed    = errors.New("session ttl exceed")
-	StreamIdDupErr      = errors.New("stream id duplicated err")
-	StreamIdNotFoundErr = errors.New("stream id not found")
+	ErrConnReadWriteOps = errors.New("conn read write ops err")
+	ErrSessionClosed    = errors.New("session closed")
+	ErrSessionTTLExceed = errors.New("session ttl exceed")
+	ErrStreamIdDup      = errors.New("stream id duplicated err")
+	ErrStreamIdNotFound = errors.New("stream id not found")
 )
 
 type roleType uint8
@@ -268,14 +268,14 @@ func (session *Session) recvLoop() {
 		case <-session.ctx.Done():
 			return
 		case <-ttlTicker.C:
-			session.CloseWithErr(SessionTTLExceed)
+			session.CloseWithErr(ErrSessionTTLExceed)
 			return
 		default:
 			// 首先处理 header
 			session.configureReadDeadline()
 			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
-				session.CloseWithErr(errors.Wrap(ConnReadWriteOpsErr, err.Error()))
+				session.CloseWithErr(errors.Wrap(ErrConnReadWriteOps, err.Error()))
 				return
 			}
 
@@ -313,7 +313,7 @@ func (session *Session) recvLoop() {
 					session.configureReadDeadline()
 					n, err := session.conn.Read(buffer[hasRead:header.dataLength])
 					if err != nil {
-						session.CloseWithErr(errors.Wrap(ConnReadWriteOpsErr, err.Error()))
+						session.CloseWithErr(errors.Wrap(ErrConnReadWriteOps, err.Error()))
 						return
 					}
 
@@ -322,7 +322,7 @@ func (session *Session) recvLoop() {
 
 				dataFrame := NewFrameContext(session.ctx, cmdPSH, header.streamId, buffer[:header.dataLength])
 				stream, err := session.getStream(header.streamId)
-				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
+				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
 					// 此处没有拿到 stream，可能被关闭了，主动关闭连接时需通知远程进行关闭，此处丢弃
 					dataFrame.Close()
 					continue
@@ -342,7 +342,7 @@ func (session *Session) recvLoop() {
 
 			case cmdFIN: // 收到远程的关闭通知，被动关闭
 				stream, err := session.getStream(header.streamId)
-				if err != nil && errors.Is(err, StreamIdNotFoundErr) {
+				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
 					// 这个 stream 可能已经被关闭了,直接返回就可以了
 					continue
 				}
@@ -439,7 +439,7 @@ func (session *Session) getStream(streamId uint32) (*Stream, error) {
 	if stream, ok := session.streams[streamId]; ok {
 		return stream, nil
 	} else {
-		return nil, StreamIdNotFoundErr
+		return nil, ErrStreamIdNotFound
 	}
 }
 
@@ -448,7 +448,7 @@ func (session *Session) registerStream(stream *Stream) error {
 	defer session.streamMutex.Unlock()
 
 	if _, ok := session.streams[stream.id]; ok {
-		return StreamIdDupErr
+		return ErrStreamIdDup
 	}
 
 	session.streams[stream.id] = stream
@@ -463,21 +463,21 @@ func (session *Session) unregisterStream(stream *Stream) error {
 		delete(session.streams, stream.id)
 		return nil
 	} else {
-		return StreamIdNotFoundErr
+		return ErrStreamIdNotFound
 	}
 }
 
 // OpenStream 创建一个新的 stream
 func (session *Session) OpenStream() (*Stream, error) {
 	if session.IsClose() {
-		return nil, SessionClosedErr
+		return nil, ErrSessionClosed
 	}
 
 	streamId := session.genStreamId()
 
 	select {
 	case <-session.ctx.Done():
-		return nil, SessionClosedErr
+		return nil, ErrSessionClosed
 	case session.readyWriteChan <- NewFrameContext(session.ctx, cmdSYN, streamId, nil):
 		stream := session.newStream(streamId)
 		err := session.registerStream(stream)
@@ -495,7 +495,7 @@ func (session *Session) Open() (net.Conn, error) {
 func (session *Session) AcceptStream() (*Stream, error) {
 	select {
 	case <-session.ctx.Done():
-		return nil, errors.Wrap(SessionClosedErr, session.err.Error())
+		return nil, errors.Wrap(ErrSessionClosed, session.err.Error())
 	case frame := <-session.readyAcceptChan:
 		stream := session.newStream(frame.streamId)
 		err := session.registerStream(stream)
