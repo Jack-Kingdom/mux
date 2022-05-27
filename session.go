@@ -402,7 +402,7 @@ func (session *Session) sendLoop() {
 
 // 持续地发送心跳包
 func (session *Session) heartBeatLoop() {
-	ticker := time.NewTicker(time.Duration(session.heartBeatInterval) * time.Second)
+	ticker := time.NewTicker(session.heartBeatInterval)
 	defer ticker.Stop()
 
 	for {
