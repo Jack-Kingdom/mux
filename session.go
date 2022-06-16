@@ -329,6 +329,10 @@ func (session *Session) recvLoop() {
 					dataFrame.Close()
 					continue
 				}
+				if err != nil {
+					session.CloseWithErr(err)
+					return
+				}
 
 				select {
 				case <-session.ctx.Done():
@@ -499,7 +503,7 @@ func (session *Session) AcceptStream() (*Stream, error) {
 			return nil, err
 		}
 		frame.Close()
-		stream.synced = true  // 接收 remote 的连接，不需要再向 remote 发送 SYN
+		stream.synced = true // 接收 remote 的连接，不需要再向 remote 发送 SYN
 		return stream, nil
 	}
 }
