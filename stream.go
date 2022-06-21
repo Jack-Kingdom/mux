@@ -48,6 +48,8 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 	defer timeout.Stop()
 
 	select {
+	case <- stream.session.Ctx().Done():
+		return 0, ErrSessionClosed
 	case <-stream.ctx.Done():
 		return 0, ErrStreamClosed
 	case <-timeout.C:
@@ -73,6 +75,8 @@ func (stream *Stream) Read(buffer []byte) (int, error) {
 	defer timeout.Stop()
 
 	select {
+	case <- stream.session.Ctx().Done():
+		return 0, ErrSessionClosed
 	case <-stream.ctx.Done():
 		return 0, ErrStreamClosed
 	case <-timeout.C:
@@ -107,6 +111,8 @@ func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
 	}
 
 	select {
+	case <- stream.session.Ctx().Done():
+		return ErrSessionClosed
 	case <-stream.ctx.Done():
 		return ErrStreamClosed
 	case stream.session.readyWriteChan <- NewFrameContext(stream.ctx, cmdFIN, stream.id, nil):
