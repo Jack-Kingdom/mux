@@ -48,7 +48,7 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 	defer timeout.Stop()
 
 	select {
-	case <- stream.session.Ctx().Done():
+	case <-stream.session.Ctx().Done():
 		return 0, ErrSessionClosed
 	case <-stream.ctx.Done():
 		return 0, ErrStreamClosed
@@ -57,6 +57,8 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 	case stream.session.readyWriteChan <- frame:
 		// 直接返回的话可能会导致 frame 中 payload 的 buffer 被回收覆盖
 		select {
+		case <-stream.session.Ctx().Done():
+			return 0, ErrSessionClosed
 		case <-stream.ctx.Done():
 			return 0, ErrStreamClosed
 		case <-frame.ctx.Done():
@@ -75,7 +77,7 @@ func (stream *Stream) Read(buffer []byte) (int, error) {
 	defer timeout.Stop()
 
 	select {
-	case <- stream.session.Ctx().Done():
+	case <-stream.session.Ctx().Done():
 		return 0, ErrSessionClosed
 	case <-stream.ctx.Done():
 		return 0, ErrStreamClosed
@@ -111,7 +113,7 @@ func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
 	}
 
 	select {
-	case <- stream.session.Ctx().Done():
+	case <-stream.session.Ctx().Done():
 		return ErrSessionClosed
 	case <-stream.ctx.Done():
 		return ErrStreamClosed
