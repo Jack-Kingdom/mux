@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
 	"github.com/pkg/errors"
 	"net"
@@ -492,10 +493,12 @@ func (session *Session) Open() (net.Conn, error) {
 	return session.OpenStream()
 }
 
-func (session *Session) AcceptStream() (*Stream, error) {
+func (session *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 	select {
 	case <-session.ctx.Done():
-		return nil, errors.Wrap(ErrSessionClosed, session.err.Error())
+		return nil, fmt.Errorf("%w, %s", ErrSessionClosed, session.err.Error())
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	case frame := <-session.readyAcceptChan:
 		stream := session.newStream(frame.streamId)
 		err := session.registerStream(stream)
@@ -509,5 +512,5 @@ func (session *Session) AcceptStream() (*Stream, error) {
 }
 
 func (session *Session) Accept() (net.Conn, error) {
-	return session.AcceptStream()
+	return session.AcceptStream(context.TODO())
 }
