@@ -353,14 +353,9 @@ func (session *Session) recvLoop() {
 					// 这个 stream 可能已经被关闭了,直接返回就可以了
 					continue
 				}
-				select {
-				case <-stream.Done():
-					return
-				default:
-					// 被动关闭，不需要通知 remote
-					stream.cancel()
-					_ = session.unregisterStream(stream)
-				}
+				// 被动关闭，不需要通知 remote
+				stream.cancel()
+				_ = session.unregisterStream(stream)
 			case cmdPING:
 				frame := NewFrameContext(session.ctx, cmdPONG, 0, nil)
 				session.readyWriteChan <- frame
@@ -394,7 +389,7 @@ func (session *Session) sendLoop() {
 				return
 			}
 
-			if frame.cmd == cmdPSH || frame.cmd == cmdSYN {
+			if frame.cmd == cmdPSH{
 				session.configureWriteDeadline()
 				n, err = session.conn.Write(frame.payload[:frame.dataLength])
 				if err != nil {
