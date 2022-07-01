@@ -177,6 +177,8 @@ func NewSession(conn net.Conn, options ...Option) *Session {
 }
 
 func (session *Session) StreamCount() int {
+	session.streamMutex.Lock()
+	defer session.streamMutex.Unlock()
 	return len(session.streams)
 }
 
@@ -291,20 +293,18 @@ func (session *Session) recvLoop() {
 			ttlTicker.Reset(session.transportTTL) // 收到数据包，重置 ttl
 
 			switch header.cmd {
-			case cmdSYN, cmdPSH:
-				if header.cmd == cmdSYN {
-					synFrame := NewFrameContext(session.ctx, cmdSYN, header.streamId, nil)
+			case cmdSYN:
+				synFrame := NewFrameContext(session.ctx, cmdSYN, header.streamId, nil)
+				select {
+				case <-session.ctx.Done():
+					return
+				case session.readyAcceptChan <- synFrame:
 					select {
 					case <-session.ctx.Done():
-						return
-					case session.readyAcceptChan <- synFrame:
-						select {
-						case <-session.ctx.Done():
-						case <-synFrame.ctx.Done():
-						}
+					case <-synFrame.ctx.Done():
 					}
 				}
-
+			case cmdPSH:
 				// 注意这个地方需要处理拆包和粘包的问题
 				if len(buffer) < int(header.dataLength) {
 					session.CloseWithErr(BufferSizeLimitErr)
@@ -475,22 +475,38 @@ func (session *Session) unregisterStream(stream *Stream) error {
 }
 
 // OpenStream 创建一个新的 stream
-func (session *Session) OpenStream() (*Stream, error) {
+func (session *Session) OpenStream(ctx context.Context) (*Stream, error) {
 	if session.IsClose() {
 		return nil, ErrSessionClosed
 	}
 
 	streamId := session.genStreamId()
 	stream := session.newStream(streamId)
-	err := session.registerStream(stream)
-	if err != nil {
-		return nil, err
+	frame := NewFrameContext(ctx, cmdSYN, streamId, nil)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-session.ctx.Done():
+		return nil, session.ctx.Err()
+	case session.readyWriteChan <- frame:
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-session.ctx.Done():
+			return nil, session.ctx.Err()
+		case <-frame.ctx.Done():
+			err := session.registerStream(stream)
+			if err != nil {
+				session.CloseWithErr(err)
+				return nil, err
+			}
+			return stream, nil
+		}
 	}
-	return stream, nil
 }
 
 func (session *Session) Open() (net.Conn, error) {
-	return session.OpenStream()
+	return session.OpenStream(context.TODO())
 }
 
 func (session *Session) AcceptStream(ctx context.Context) (*Stream, error) {
@@ -506,7 +522,6 @@ func (session *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 			return nil, err
 		}
 		frame.Close()
-		stream.synced = true // 接收 remote 的连接，不需要再向 remote 发送 SYN
 		return stream, nil
 	}
 }

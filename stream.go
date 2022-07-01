@@ -18,7 +18,6 @@ var (
 
 type Stream struct {
 	id            uint32
-	synced        bool // 判断当前 stream 是否已经与 remote 同步
 	session       *Session
 	readyReadChan chan *Frame
 	readDeadline  time.Time
@@ -33,12 +32,6 @@ func (stream *Stream) Done() <-chan struct{} {
 
 func (stream *Stream) Write(buffer []byte) (int, error) {
 	frame := NewFrameContext(stream.ctx, cmdPSH, stream.id, buffer)
-
-	if !stream.synced {
-		frame.cmd = cmdSYN
-		stream.synced = true
-	}
-
 	var timeout *time.Timer
 	if stream.readDeadline != (time.Time{}) {
 		timeout = time.NewTimer(time.Until(stream.readDeadline))
@@ -106,9 +99,6 @@ func (stream *Stream) IsClose() bool {
 func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
 	err := stream.session.unregisterStream(stream)
 	if err != nil {
-		if errors.Is(err, ErrStreamIdNotFound) { // 此处由 session 关闭了，跳过即可
-			return nil
-		}
 		return err
 	}
 

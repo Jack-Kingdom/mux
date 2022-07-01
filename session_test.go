@@ -1,6 +1,7 @@
 package mux
 
 import (
+	"context"
 	"go.uber.org/zap"
 	"log"
 	"net"
@@ -46,7 +47,7 @@ func TestSession(t *testing.T) {
 		serverSession := NewSession(conn, WithRole(RoleServer), WithBufferSize(bufferLength))
 
 		for {
-			stream, err := serverSession.AcceptStream()
+			stream, err := serverSession.AcceptStream(context.TODO())
 			if err != nil {
 				t.Error(err)
 				return
@@ -87,7 +88,7 @@ func TestSession(t *testing.T) {
 	clientSession := NewSession(conn, WithRole(RoleClient), WithHeartBeatInterval(10*time.Second), WithBufferSize(bufferLength))
 
 	for i := 0; i < 4; i++ {
-		stream, err := clientSession.OpenStream()
+		stream, err := clientSession.OpenStream(context.TODO())
 		if err != nil {
 			t.Error(err)
 			return
