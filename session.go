@@ -2,17 +2,16 @@ package mux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
-	"github.com/pkg/errors"
-	"net"
+	"github.com/rabbit-proxy/transport"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 var (
-	ErrConnReadWriteOps = errors.New("conn read write ops err")
 	ErrSessionClosed    = errors.New("session closed")
 	ErrSessionTTLExceed = errors.New("session ttl exceed")
 	ErrStreamIdDup      = errors.New("stream id duplicated err")
@@ -38,11 +37,7 @@ func (role roleType) String() string {
 }
 
 type Session struct {
-	conn             net.Conn
-	readTimeout      time.Duration
-	writeTimeout     time.Duration
-	readWriteTimeout time.Duration
-
+	socket          transport.SocketInterface
 	streams         map[uint32]*Stream
 	streamMutex     sync.Mutex
 	streamIdCounter uint32
@@ -76,24 +71,6 @@ type Session struct {
 type Option func(*Session)
 type BufferAllocFunc func() []byte
 type BufferRecycleFunc func([]byte)
-
-func WithReadTimeout(readTimeout time.Duration) Option {
-	return func(s *Session) {
-		s.readTimeout = readTimeout
-	}
-}
-
-func WithWriteTimeout(writeTimeout time.Duration) Option {
-	return func(s *Session) {
-		s.writeTimeout = writeTimeout
-	}
-}
-
-func WithReadWriteTimeout(readWriteTimeout time.Duration) Option {
-	return func(s *Session) {
-		s.readWriteTimeout = readWriteTimeout
-	}
-}
 
 func WithRole(role roleType) Option {
 	return func(session *Session) {
@@ -137,10 +114,10 @@ func WithBufferRecycleFunc(f BufferRecycleFunc) Option {
 	}
 }
 
-func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *Session {
+func NewSessionContext(ctx context.Context, socket transport.SocketInterface, options ...Option) *Session {
 	currentCtx, cancel := context.WithCancel(ctx)
 	session := &Session{
-		conn:            conn,
+		socket:          socket,
 		streams:         make(map[uint32]*Stream, 64),
 		readyWriteChan:  make(chan *Frame),
 		readyAcceptChan: make(chan *Frame),
@@ -172,8 +149,8 @@ func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *S
 	return session
 }
 
-func NewSession(conn net.Conn, options ...Option) *Session {
-	return NewSessionContext(context.TODO(), conn, options...)
+func NewSession(socket transport.SocketInterface, options ...Option) *Session {
+	return NewSessionContext(context.TODO(), socket, options...)
 }
 
 func (session *Session) StreamCount() int {
@@ -225,33 +202,13 @@ func (session *Session) IsClose() bool {
 
 func (session *Session) Close() error {
 	session.cancel()
-	_ = session.conn.Close()
+	_ = session.socket.Close()
 	return session.err
 }
 
 func (session *Session) CloseWithErr(err error) {
 	session.err = err
 	_ = session.Close()
-}
-
-func (session *Session) configureReadDeadline() {
-	if session.readTimeout > 0 {
-		_ = session.conn.SetReadDeadline(time.Now().Add(session.readTimeout))
-	} else if session.readWriteTimeout > 0 {
-		_ = session.conn.SetReadDeadline(time.Now().Add(session.readWriteTimeout))
-	} else {
-		_ = session.conn.SetReadDeadline(time.Time{})
-	}
-}
-
-func (session *Session) configureWriteDeadline() {
-	if session.writeTimeout > 0 {
-		_ = session.conn.SetWriteDeadline(time.Now().Add(session.writeTimeout))
-	} else if session.readWriteTimeout > 0 {
-		_ = session.conn.SetWriteDeadline(time.Now().Add(session.readWriteTimeout))
-	} else {
-		_ = session.conn.SetWriteDeadline(time.Time{})
-	}
 }
 
 func (session *Session) recvLoop() {
@@ -275,10 +232,9 @@ func (session *Session) recvLoop() {
 			return
 		default:
 			// 首先处理 header
-			session.configureReadDeadline()
-			n, err := session.conn.Read(buffer[:headerSize])
+			n, err := session.socket.Read(session.ctx, buffer[:headerSize])
 			if err != nil {
-				session.CloseWithErr(errors.Wrap(ErrConnReadWriteOps, err.Error()))
+				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %w", err))
 				return
 			}
 
@@ -286,7 +242,7 @@ func (session *Session) recvLoop() {
 
 			_, err = header.UnMarshalHeader(buffer[:n])
 			if err != nil {
-				session.CloseWithErr(errors.Wrap(err, "err on unmarshal header to frame"))
+				session.CloseWithErr(fmt.Errorf("session.recvLoop unmarshal header error: %w", err))
 				return
 			}
 
@@ -313,10 +269,9 @@ func (session *Session) recvLoop() {
 
 				hasRead := 0
 				for hasRead < int(header.dataLength) {
-					session.configureReadDeadline()
-					n, err := session.conn.Read(buffer[hasRead:header.dataLength])
+					n, err := session.socket.Read(session.ctx, buffer[hasRead:header.dataLength])
 					if err != nil {
-						session.CloseWithErr(errors.Wrap(ErrConnReadWriteOps, err.Error()))
+						session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 						return
 					}
 
@@ -382,18 +337,16 @@ func (session *Session) sendLoop() {
 				return
 			}
 
-			session.configureWriteDeadline()
-			_, err = session.conn.Write(buffer[:n])
+			_, err = session.socket.Write(session.ctx, buffer[:n])
 			if err != nil {
-				session.CloseWithErr(errors.Wrap(err, "err on write frame header"))
+				session.CloseWithErr(fmt.Errorf("session.sendLoop write header error: %w", err))
 				return
 			}
 
-			if frame.cmd == cmdPSH{
-				session.configureWriteDeadline()
-				n, err = session.conn.Write(frame.payload[:frame.dataLength])
+			if frame.cmd == cmdPSH {
+				n, err = session.socket.Write(session.ctx, frame.payload[:frame.dataLength])
 				if err != nil {
-					session.CloseWithErr(errors.Wrap(err, "err on write frame payload"))
+					session.CloseWithErr(fmt.Errorf("session.sendLoop write payload error: %w", err))
 					return
 				}
 			}
@@ -500,10 +453,6 @@ func (session *Session) OpenStream(ctx context.Context) (*Stream, error) {
 	}
 }
 
-func (session *Session) Open() (net.Conn, error) {
-	return session.OpenStream(context.TODO())
-}
-
 func (session *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 	select {
 	case <-session.ctx.Done():
@@ -519,8 +468,4 @@ func (session *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 		frame.Close()
 		return stream, nil
 	}
-}
-
-func (session *Session) Accept() (net.Conn, error) {
-	return session.AcceptStream(context.TODO())
 }

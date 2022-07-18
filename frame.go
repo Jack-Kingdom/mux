@@ -3,7 +3,7 @@ package mux
 import (
 	"context"
 	"encoding/binary"
-	"github.com/pkg/errors"
+	"errors"
 )
 
 type cmdType byte

@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	"github.com/rabbit-proxy/transport"
 	"go.uber.org/zap"
 	"log"
 	"net"
@@ -27,6 +28,9 @@ func TestSession(t *testing.T) {
 		log.Println(http.ListenAndServe(":6060", nil))
 	}()
 
+	ctx, cancel := context.WithTimeout(context.TODO(), 5 * time.Second)
+	defer cancel()
+
 	go func() {
 		listener, err := net.Listen("tcp", "localhost:8843")
 		defer listener.Close()
@@ -44,10 +48,10 @@ func TestSession(t *testing.T) {
 		}
 		t.Logf("conn accept.")
 
-		serverSession := NewSession(conn, WithRole(RoleServer), WithBufferSize(bufferLength))
+		serverSession := NewSession(transport.NewConnSocket(conn), WithRole(RoleServer), WithBufferSize(bufferLength))
 
 		for {
-			stream, err := serverSession.AcceptStream(context.TODO())
+			stream, err := serverSession.AcceptStream(ctx)
 			if err != nil {
 				t.Error(err)
 				return
@@ -55,25 +59,21 @@ func TestSession(t *testing.T) {
 			t.Logf("stream %d accept.", stream.id)
 
 			buffer := serverSession.getBuffer()
-			n, err := stream.Read(buffer)
+			n, err := stream.Read(ctx, buffer)
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			t.Logf("server stream %d read: %s", stream.id, buffer[:n])
 
-			_, err = stream.Write(buffer[:n])
+			_, err = stream.Write(ctx, buffer[:n])
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			t.Logf("server stream %d write: %s", stream.id, buffer[:n])
 
-			err = stream.Close()
-			if err != nil {
-				t.Error(err)
-				return
-			}
+			_ = stream.Close()
 		}
 	}()
 
@@ -85,17 +85,17 @@ func TestSession(t *testing.T) {
 		return
 	}
 
-	clientSession := NewSession(conn, WithRole(RoleClient), WithHeartBeatInterval(10*time.Second), WithBufferSize(bufferLength))
+	clientSession := NewSession(transport.NewConnSocket(conn), WithRole(RoleClient), WithHeartBeatInterval(10*time.Second), WithBufferSize(bufferLength))
 
 	for i := 0; i < 4; i++ {
-		stream, err := clientSession.OpenStream(context.TODO())
+		stream, err := clientSession.OpenStream(ctx)
 		if err != nil {
 			t.Error(err)
 			return
 		}
 		t.Logf("client stream %d opened.", stream.id)
 
-		_, err = stream.Write([]byte(testPayload))
+		_, err = stream.Write(ctx, []byte(testPayload))
 		if err != nil {
 			t.Error(err)
 			return
@@ -103,17 +103,13 @@ func TestSession(t *testing.T) {
 		t.Logf("client stream %d write: %s", stream.id, testPayload)
 
 		buffer := make([]byte, bufferLength)
-		n, err := stream.Read(buffer)
+		n, err := stream.Read(ctx, buffer)
 		if err != nil {
 			t.Error(err)
 			return
 		}
 		t.Logf("client stream %d read: %s", stream.id, buffer[:n])
 
-		err = stream.Close()
-		if err != nil {
-			t.Error(err)
-			return
-		}
+		_ = stream.Close()
 	}
 }
