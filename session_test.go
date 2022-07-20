@@ -2,7 +2,6 @@ package mux
 
 import (
 	"context"
-	"github.com/rabbit-proxy/transport"
 	"go.uber.org/zap"
 	"log"
 	"net"
@@ -48,7 +47,7 @@ func TestSession(t *testing.T) {
 		}
 		t.Logf("conn accept.")
 
-		serverSession := NewSession(transport.NewConnSocket(conn), WithRole(RoleServer), WithBufferSize(bufferLength))
+		serverSession := NewSession(conn, WithRole(RoleServer), WithBufferSize(bufferLength))
 
 		for {
 			stream, err := serverSession.AcceptStream(ctx)
@@ -85,7 +84,7 @@ func TestSession(t *testing.T) {
 		return
 	}
 
-	clientSession := NewSession(transport.NewConnSocket(conn), WithRole(RoleClient), WithHeartBeatInterval(10*time.Second), WithBufferSize(bufferLength))
+	clientSession := NewSession(conn, WithRole(RoleClient), WithHeartBeatInterval(10*time.Second), WithBufferSize(bufferLength))
 
 	for i := 0; i < 4; i++ {
 		stream, err := clientSession.OpenStream(ctx)

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
-	"github.com/rabbit-proxy/transport"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,8 +37,8 @@ func (role roleType) String() string {
 }
 
 type Session struct {
-	socket          transport.SocketInterface
-	streams         map[uint32]*Stream
+	conn    io.ReadWriteCloser
+	streams map[uint32]*Stream
 	streamMutex     sync.Mutex
 	streamIdCounter uint32
 
@@ -114,10 +114,10 @@ func WithBufferRecycleFunc(f BufferRecycleFunc) Option {
 	}
 }
 
-func NewSessionContext(ctx context.Context, socket transport.SocketInterface, options ...Option) *Session {
+func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
 	currentCtx, cancel := context.WithCancel(ctx)
 	session := &Session{
-		socket:          socket,
+		conn:            conn,
 		streams:         make(map[uint32]*Stream, 64),
 		readyWriteChan:  make(chan *Frame),
 		readyAcceptChan: make(chan *Frame),
@@ -149,8 +149,8 @@ func NewSessionContext(ctx context.Context, socket transport.SocketInterface, op
 	return session
 }
 
-func NewSession(socket transport.SocketInterface, options ...Option) *Session {
-	return NewSessionContext(context.TODO(), socket, options...)
+func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
+	return NewSessionContext(context.TODO(), conn, options...)
 }
 
 func (session *Session) StreamCount() int {
@@ -202,7 +202,7 @@ func (session *Session) IsClose() bool {
 
 func (session *Session) Close() error {
 	session.cancel()
-	_ = session.socket.Close()
+	_ = session.conn.Close()
 	return session.err
 }
 
@@ -232,7 +232,7 @@ func (session *Session) recvLoop() {
 			return
 		default:
 			// 首先处理 header
-			n, err := session.socket.Read(session.ctx, buffer[:headerSize])
+			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
 				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %w", err))
 				return
@@ -269,7 +269,7 @@ func (session *Session) recvLoop() {
 
 				hasRead := 0
 				for hasRead < int(header.dataLength) {
-					n, err := session.socket.Read(session.ctx, buffer[hasRead:header.dataLength])
+					n, err := session.conn.Read(buffer[hasRead:header.dataLength])
 					if err != nil {
 						session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 						return
@@ -337,14 +337,14 @@ func (session *Session) sendLoop() {
 				return
 			}
 
-			_, err = session.socket.Write(session.ctx, buffer[:n])
+			_, err = session.conn.Write(buffer[:n])
 			if err != nil {
 				session.CloseWithErr(fmt.Errorf("session.sendLoop write header error: %w", err))
 				return
 			}
 
 			if frame.cmd == cmdPSH {
-				n, err = session.socket.Write(session.ctx, frame.payload[:frame.dataLength])
+				n, err = session.conn.Write(frame.payload[:frame.dataLength])
 				if err != nil {
 					session.CloseWithErr(fmt.Errorf("session.sendLoop write payload error: %w", err))
 					return
