@@ -438,7 +438,7 @@ func (session *Session) OpenStream(ctx context.Context) (*Stream, error) {
 		return nil, session.ctx.Err()
 	case session.readyWriteChan <- frame:
 		select {
-		case <-ctx.Done():
+		case <-ctx.Done():	// 注意：存在 syn 发送，server 创建 stream 但 client 却没有创建的情况
 			return nil, ctx.Err()
 		case <-session.ctx.Done():
 			return nil, session.ctx.Err()

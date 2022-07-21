@@ -58,14 +58,14 @@ func TestSession(t *testing.T) {
 			t.Logf("stream %d accept.", stream.id)
 
 			buffer := serverSession.getBuffer()
-			n, err := stream.Read(ctx, buffer)
+			n, err := stream.Read(buffer)
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			t.Logf("server stream %d read: %s", stream.id, buffer[:n])
 
-			_, err = stream.Write(ctx, buffer[:n])
+			_, err = stream.Write(buffer[:n])
 			if err != nil {
 				t.Error(err)
 				return
@@ -94,7 +94,7 @@ func TestSession(t *testing.T) {
 		}
 		t.Logf("client stream %d opened.", stream.id)
 
-		_, err = stream.Write(ctx, []byte(testPayload))
+		_, err = stream.Write([]byte(testPayload))
 		if err != nil {
 			t.Error(err)
 			return
@@ -102,7 +102,7 @@ func TestSession(t *testing.T) {
 		t.Logf("client stream %d write: %s", stream.id, testPayload)
 
 		buffer := make([]byte, bufferLength)
-		n, err := stream.Read(ctx, buffer)
+		n, err := stream.Read(buffer)
 		if err != nil {
 			t.Error(err)
 			return

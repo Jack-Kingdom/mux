@@ -22,7 +22,7 @@ func (stream *Stream) Done() <-chan struct{} {
 	return stream.ctx.Done()
 }
 
-func (stream *Stream) Write(ctx context.Context, buffer []byte) (int, error) {
+func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, error) {
 	frame := NewFrameContext(stream.ctx, cmdPSH, stream.id, buffer)
 
 	select {
@@ -35,6 +35,8 @@ func (stream *Stream) Write(ctx context.Context, buffer []byte) (int, error) {
 	case stream.session.readyWriteChan <- frame:
 		// 直接返回的话可能会导致 frame 中 payload 的 buffer 被回收覆盖
 		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
 		case <-stream.session.Ctx().Done():
 			return 0, ErrSessionClosed
 		case <-stream.ctx.Done():
@@ -45,7 +47,11 @@ func (stream *Stream) Write(ctx context.Context, buffer []byte) (int, error) {
 	}
 }
 
-func (stream *Stream) Read(ctx context.Context, buffer []byte) (int, error) {
+func (stream *Stream) Write(buffer []byte) (int, error) {
+	return stream.WriteContext(context.TODO(), buffer)
+}
+
+func (stream *Stream) ReadContext(ctx context.Context, buffer []byte) (int, error) {
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
@@ -62,6 +68,10 @@ func (stream *Stream) Read(ctx context.Context, buffer []byte) (int, error) {
 		frame.Close()
 		return len(frame.payload), nil
 	}
+}
+
+func (stream *Stream) Read(buffer []byte) (int, error) {
+	return stream.ReadContext(context.TODO(), buffer)
 }
 
 func (stream *Stream) IsClose() bool {
