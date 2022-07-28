@@ -261,8 +261,29 @@ func (session *Session) recvLoop() {
 					}
 				}
 			case cmdPSH:
+				stream, err := session.getStream(header.streamId)
+				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
+					// 此处没有拿到 stream，可能被关闭了，主动关闭连接时需通知远程进行关闭，此处读取剩余的数据包并丢弃
+					hasRead := 0
+					for hasRead < int(header.dataLength) {
+						n, err := session.conn.Read(buffer[:header.dataLength])
+						if err != nil {
+							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+							return
+						}
+
+						hasRead += n
+					}
+					continue
+				}
+				if err != nil {
+					session.CloseWithErr(err)
+					return
+				}
+
+				dataFrame := <-stream.readyReadChan
 				// 注意这个地方需要处理拆包和粘包的问题
-				if len(buffer) < int(header.dataLength) {
+				if len(dataFrame.payload) < int(header.dataLength) {
 					session.CloseWithErr(BufferSizeLimitErr)
 					return
 				}
@@ -277,30 +298,7 @@ func (session *Session) recvLoop() {
 
 					hasRead += n
 				}
-
-				dataFrame := NewFrameContext(session.ctx, cmdPSH, header.streamId, buffer[:header.dataLength])
-				stream, err := session.getStream(header.streamId)
-				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
-					// 此处没有拿到 stream，可能被关闭了，主动关闭连接时需通知远程进行关闭，此处丢弃
-					dataFrame.Close()
-					continue
-				}
-				if err != nil {
-					session.CloseWithErr(err)
-					return
-				}
-
-				select {
-				case <-session.ctx.Done():
-				case <-stream.ctx.Done():
-				case stream.readyReadChan <- dataFrame:
-					// 这里需要等待 frame 被消耗掉
-					select {
-					case <-session.ctx.Done():
-					case <-stream.ctx.Done():
-					case <-dataFrame.ctx.Done():
-					}
-				}
+				dataFrame.Close()	//读取完成后关闭此 frame
 
 			case cmdFIN: // 收到远程的关闭通知，被动关闭
 				stream, err := session.getStream(header.streamId)

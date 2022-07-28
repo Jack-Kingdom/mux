@@ -52,6 +52,8 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 }
 
 func (stream *Stream) ReadContext(ctx context.Context, buffer []byte) (int, error) {
+	frame := NewFrameContext(stream.ctx, cmdPSH, stream.id, buffer)
+
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
@@ -59,14 +61,17 @@ func (stream *Stream) ReadContext(ctx context.Context, buffer []byte) (int, erro
 		return 0, ErrSessionClosed
 	case <-stream.ctx.Done():
 		return 0, ErrStreamClosed
-	case frame := <-stream.readyReadChan:
-		if len(buffer) < int(frame.dataLength) {
-			frame.Close()
-			return 0, ErrReadBufferLimited
+	case stream.readyReadChan <- frame:
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-stream.session.Ctx().Done():
+			return 0, ErrSessionClosed
+		case <-stream.ctx.Done():
+			return 0, ErrStreamClosed
+		case <-frame.ctx.Done():
+			return int(frame.dataLength), nil
 		}
-		copy(buffer, frame.payload)		// todo 移除这里的 copy
-		frame.Close()
-		return len(frame.payload), nil
 	}
 }
 

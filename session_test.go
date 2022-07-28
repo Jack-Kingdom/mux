@@ -109,7 +109,7 @@ func BenchmarkSession(b *testing.B) {
 				mutex.Unlock()
 				return
 			default:
-				n, err := conn.Read(buffer[:bufferLength])
+				n, err := conn.Read(buffer[:bufferLength-1024])
 				if err != nil {
 					b.Errorf("read error: %s", err)
 				}
@@ -126,7 +126,7 @@ func BenchmarkSession(b *testing.B) {
 			case <-ctx.Done():
 				return
 			default:
-				n, err := conn.Write(buffer[:bufferLength])
+				n, err := conn.Write(buffer[:bufferLength-1024])
 				if err != nil {
 					b.Errorf("read error: %s", err)
 				}
