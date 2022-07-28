@@ -64,7 +64,7 @@ func (stream *Stream) ReadContext(ctx context.Context, buffer []byte) (int, erro
 			frame.Close()
 			return 0, ErrReadBufferLimited
 		}
-		copy(buffer, frame.payload)
+		copy(buffer, frame.payload)		// todo 移除这里的 copy
 		frame.Close()
 		return len(frame.payload), nil
 	}

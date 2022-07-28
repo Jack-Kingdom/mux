@@ -1,5 +1,5 @@
-github.com/Jack-Kingdom/go-dsa v0.0.1 h1:te6eEUE1gkoGw0WTWyIRVJvl0mfEfpjAZ6I8AX0stkc=
-github.com/Jack-Kingdom/go-dsa v0.0.1/go.mod h1:7cGLQpdvT0jZU3xc741Q9rw2/Wjmagwa1GzlHKgBV/Y=
+github.com/Jack-Kingdom/go-dsa v0.0.3 h1:87n6gyG+40Rp65yRRphSNNKtQHE2rcupqZ+yItO1FtI=
+github.com/Jack-Kingdom/go-dsa v0.0.3/go.mod h1:7cGLQpdvT0jZU3xc741Q9rw2/Wjmagwa1GzlHKgBV/Y=
 github.com/benbjohnson/clock v1.1.0 h1:Q92kusRqC1XV2MjkWETPvjJVqKetz1OzxZB7mHJLju8=
 github.com/benbjohnson/clock v1.1.0/go.mod h1:J11/hYXuz8f4ySSvYwY0FKfm+ezbsZBKZxNJlLklBHA=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
