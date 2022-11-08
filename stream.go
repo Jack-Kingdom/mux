@@ -3,6 +3,8 @@ package mux
 import (
 	"context"
 	"errors"
+	"net"
+	"time"
 )
 
 var (
@@ -16,6 +18,8 @@ type Stream struct {
 	readyReadChan chan *Frame
 	ctx           context.Context
 	cancel        context.CancelFunc
+	readDeadline  time.Time
+	writeDeadline time.Time
 }
 
 func (stream *Stream) Done() <-chan struct{} {
@@ -48,6 +52,11 @@ func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, err
 }
 
 func (stream *Stream) Write(buffer []byte) (int, error) {
+	if stream.writeDeadline.After(time.Now()) {
+		ctx , cancel := context.WithDeadline(context.TODO(), stream.writeDeadline)
+		defer cancel()
+		return stream.WriteContext(ctx, buffer)
+	}
 	return stream.WriteContext(context.TODO(), buffer)
 }
 
@@ -76,6 +85,12 @@ func (stream *Stream) ReadContext(ctx context.Context, buffer []byte) (int, erro
 }
 
 func (stream *Stream) Read(buffer []byte) (int, error) {
+	if stream.readDeadline.After(time.Now()) {
+		ctx , cancel := context.WithDeadline(context.TODO(), stream.readDeadline)
+		defer cancel()
+		return stream.ReadContext(ctx, buffer)
+	}
+
 	return stream.ReadContext(context.TODO(), buffer)
 }
 
@@ -103,4 +118,28 @@ func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
 		stream.cancel()
 		return nil
 	}
+}
+
+func (stream *Stream) LocalAddr() net.Addr {
+	return &net.UnixAddr{Name: "mux-stream", Net: "unix"}
+}
+
+func (stream *Stream) RemoteAddr() net.Addr {
+	return &net.UnixAddr{Name: "mux-stream", Net: "unix"}
+}
+
+func (stream *Stream) SetReadDeadline(t time.Time) error {
+	stream.readDeadline = t
+	return nil
+}
+
+func (stream *Stream) SetWriteDeadline(t time.Time) error {
+	stream.writeDeadline = t
+	return nil
+}
+
+func (stream *Stream) SetDeadline(t time.Time) error {
+	stream.readDeadline = t
+	stream.writeDeadline = t
+	return nil
 }
