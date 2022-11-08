@@ -49,7 +49,7 @@ func TestSession(t *testing.T) {
 			}
 			t.Logf("stream %d accept.", stream.id)
 
-			buffer := serverSession.getBuffer()
+			buffer := serverSession.bufferAlloc(bufferLength)
 			n, err := stream.Read(buffer)
 			if err != nil {
 				t.Error(err)

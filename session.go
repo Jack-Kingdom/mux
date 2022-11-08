@@ -69,7 +69,7 @@ type Session struct {
 }
 
 type Option func(*Session)
-type BufferAllocFunc func() []byte
+type BufferAllocFunc func(size int) []byte
 type BufferRecycleFunc func([]byte)
 
 func WithRole(role roleType) Option {
@@ -102,15 +102,10 @@ func WithBufferSize(sizeLimit int) Option {
 	}
 }
 
-func WithBufferAllocFunc(f BufferAllocFunc) Option {
+func WithBufferManager(allocFunc BufferAllocFunc, recycleFunc BufferRecycleFunc) Option {
 	return func(session *Session) {
-		session.bufferAlloc = f
-	}
-}
-
-func WithBufferRecycleFunc(f BufferRecycleFunc) Option {
-	return func(session *Session) {
-		session.bufferRecycle = f
+		session.bufferAlloc = allocFunc
+		session.bufferRecycle = recycleFunc
 	}
 }
 
@@ -135,6 +130,11 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 
 	for _, option := range options {
 		option(session)
+	}
+
+	if session.bufferAlloc == nil && session.bufferRecycle == nil {
+		session.bufferAlloc = dsaBuffer.Get
+		session.bufferRecycle = dsaBuffer.Put
 	}
 
 	session.streamIdCounter = uint32(session.role) // 初始化 streamId 计数器
@@ -164,22 +164,6 @@ get usable streamId
 */
 func (session *Session) genStreamId() uint32 {
 	return atomic.AddUint32(&session.streamIdCounter, 2)
-}
-
-func (session *Session) getBuffer() []byte {
-	if session.bufferAlloc != nil {
-		return session.bufferAlloc()
-	}
-
-	return dsaBuffer.Get(session.bufferSize)
-}
-
-func (session *Session) putBuffer(buffer []byte) {
-	if session.bufferRecycle != nil {
-		session.bufferRecycle(buffer)
-	} else {
-		dsaBuffer.Put(buffer)
-	}
 }
 
 func (session *Session) Ctx() context.Context {
@@ -212,8 +196,8 @@ func (session *Session) CloseWithErr(err error) {
 }
 
 func (session *Session) recvLoop() {
-	buffer := session.getBuffer()
-	defer session.putBuffer(buffer)
+	buffer := session.bufferAlloc(session.bufferSize)
+	defer session.bufferRecycle(buffer)
 
 	if len(buffer) < headerSize {
 		session.CloseWithErr(BufferSizeLimitErr)
@@ -232,7 +216,7 @@ func (session *Session) recvLoop() {
 			return
 		default:
 			// 首先处理 header
-			n, err := session.conn.Read(buffer[:headerSize])
+			n, err := session.conn.Read(buffer[:headerSize])	// todo n 可能小于 headerSize
 			if err != nil {
 				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %w", err))
 				return
@@ -320,8 +304,8 @@ func (session *Session) recvLoop() {
 }
 
 func (session *Session) sendLoop() {
-	buffer := session.getBuffer()
-	defer session.putBuffer(buffer)
+	buffer := session.bufferAlloc(session.bufferSize)
+	defer session.bufferRecycle(buffer)
 
 	for {
 		select {
