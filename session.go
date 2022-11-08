@@ -274,7 +274,7 @@ func (session *Session) recvLoop() {
 
 				hasRead := 0
 				for hasRead < int(header.dataLength) {
-					n, err := session.conn.Read(buffer[hasRead:header.dataLength])
+					n, err := session.conn.Read(dataFrame.payload[hasRead:header.dataLength])
 					if err != nil {
 						session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 						return
