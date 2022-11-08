@@ -272,6 +272,7 @@ func (session *Session) recvLoop() {
 					return
 				}
 
+				dataFrame.dataLength = header.dataLength
 				hasRead := 0
 				for hasRead < int(header.dataLength) {
 					n, err := session.conn.Read(dataFrame.payload[hasRead:header.dataLength])
