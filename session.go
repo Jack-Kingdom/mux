@@ -272,28 +272,44 @@ func (session *Session) recvLoop() {
 
 				// 这个地方可能存在队头阻塞的问题，先加入 metrics 进行监控
 				start := time.Now()
-				dataFrame := <-stream.readyReadChan
-				GetDataFrameDuration.Observe(time.Since(start).Seconds())
-
-				// 注意这个地方需要处理拆包和粘包的问题
-				if len(dataFrame.payload) < int(header.dataLength) {
-					session.CloseWithErr(BufferSizeLimitErr)
+				select {
+				case <-session.ctx.Done():
 					return
-				}
+				case <-stream.ctx.Done():
+					// 当前 stream 被关闭了，读取剩下的数据包并丢弃
+					hasRead := 0
+					for hasRead < int(header.dataLength) {
+						n, err := session.conn.Read(buffer[:header.dataLength])
+						if err != nil {
+							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+							return
+						}
 
-				dataFrame.dataLength = header.dataLength
-				hasRead := 0
-				for hasRead < int(header.dataLength) {
-					n, err := session.conn.Read(dataFrame.payload[hasRead:header.dataLength])
-					if err != nil {
-						session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+						hasRead += n
+					}
+					continue
+				case dataFrame := <-stream.readyReadChan:
+					GetDataFrameDuration.Observe(time.Since(start).Seconds())
+
+					// 注意这个地方需要处理拆包和粘包的问题
+					if len(dataFrame.payload) < int(header.dataLength) {
+						session.CloseWithErr(BufferSizeLimitErr)
 						return
 					}
 
-					hasRead += n
-				}
-				dataFrame.Close()	//读取完成后关闭此 frame
+					dataFrame.dataLength = header.dataLength
+					hasRead := 0
+					for hasRead < int(header.dataLength) {
+						n, err := session.conn.Read(dataFrame.payload[hasRead:header.dataLength])
+						if err != nil {
+							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+							return
+						}
 
+						hasRead += n
+					}
+					dataFrame.Close()	//读取完成后关闭此 frame
+				}
 			case cmdFIN: // 收到远程的关闭通知，被动关闭
 				stream, err := session.getStream(header.streamId)
 				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
