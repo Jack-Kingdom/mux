@@ -216,9 +216,14 @@ func (session *Session) recvLoop() {
 			return
 		default:
 			// 首先处理 header
-			n, err := session.conn.Read(buffer[:headerSize])	// todo n 可能小于 headerSize
+			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
 				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %w", err))
+				return
+			}
+
+			if n < headerSize {
+				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %s", "read header size less than headerSize"))
 				return
 			}
 
@@ -265,7 +270,11 @@ func (session *Session) recvLoop() {
 					return
 				}
 
+				// 这个地方可能存在队头阻塞的问题，先加入 metrics 进行监控
+				start := time.Now()
 				dataFrame := <-stream.readyReadChan
+				GetDataFrameDuration.Observe(time.Since(start).Seconds())
+
 				// 注意这个地方需要处理拆包和粘包的问题
 				if len(dataFrame.payload) < int(header.dataLength) {
 					session.CloseWithErr(BufferSizeLimitErr)
