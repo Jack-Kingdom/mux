@@ -37,10 +37,11 @@ func (role roleType) String() string {
 }
 
 type Session struct {
-	conn    io.ReadWriteCloser
-	streams map[uint32]*Stream
+	conn            io.ReadWriteCloser
+	streams         map[uint32]*Stream
 	streamMutex     sync.Mutex
 	streamIdCounter uint32
+	isBusy          bool
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -195,6 +196,18 @@ func (session *Session) CloseWithErr(err error) {
 	_ = session.Close()
 }
 
+func (session *Session) IsBusy() bool {
+	return session.isBusy
+}
+
+func (session *Session) detectBusyFlag(duration time.Duration) {
+	if duration > 100*time.Millisecond {
+		session.isBusy = true
+	} else {
+		session.isBusy = false
+	}
+}
+
 func (session *Session) recvLoop() {
 	buffer := session.bufferAlloc(session.bufferSize)
 	defer session.bufferRecycle(buffer)
@@ -289,7 +302,8 @@ func (session *Session) recvLoop() {
 					}
 					continue
 				case dataFrame := <-stream.readyReadChan:
-					GetDataFrameDuration.Observe(time.Since(start).Seconds())
+					DispatchFrameDuration.Observe(time.Since(start).Seconds())
+					session.detectBusyFlag(time.Since(start))
 
 					// 注意这个地方需要处理拆包和粘包的问题
 					if len(dataFrame.payload) < int(header.dataLength) {
@@ -302,13 +316,15 @@ func (session *Session) recvLoop() {
 					for hasRead < int(header.dataLength) {
 						n, err := session.conn.Read(dataFrame.payload[hasRead:header.dataLength])
 						if err != nil {
+							dataFrame.Close()
 							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 							return
 						}
 
 						hasRead += n
 					}
-					dataFrame.Close()	//读取完成后关闭此 frame
+
+					dataFrame.Close() //读取完成后关闭此 frame
 				}
 			case cmdFIN: // 收到远程的关闭通知，被动关闭
 				stream, err := session.getStream(header.streamId)
@@ -446,7 +462,7 @@ func (session *Session) OpenStream(ctx context.Context) (*Stream, error) {
 		return nil, session.ctx.Err()
 	case session.readyWriteChan <- frame:
 		select {
-		case <-ctx.Done():	// 注意：存在 syn 发送，server 创建 stream 但 client 却没有创建的情况
+		case <-ctx.Done(): // 注意：存在 syn 发送，server 创建 stream 但 client 却没有创建的情况
 			return nil, ctx.Err()
 		case <-session.ctx.Done():
 			return nil, session.ctx.Err()

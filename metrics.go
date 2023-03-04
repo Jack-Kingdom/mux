@@ -10,9 +10,15 @@ var (
 )
 
 var (
-	GetDataFrameDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "GetDataFrameDuration",
-		Help:    "获取 stream 数据帧耗时",
+	DispatchFrameDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "DispatchFrameDuration",
+		Help:    "session 分发数据帧耗时",
+		Buckets: PreciseBuckets,
+	})
+
+	SendFrameDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "SendFrameDuration",
+		Help:    "stream 发送数据帧耗时",
 		Buckets: PreciseBuckets,
 	})
 )
