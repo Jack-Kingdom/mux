@@ -29,7 +29,7 @@ func (stream *Stream) Done() <-chan struct{} {
 func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, error) {
 	start := time.Now()
 	defer func() {
-		stream.session.sendFrameDuration.Observe(time.Since(start).Seconds())
+		sendFrameDuration.Observe(time.Since(start).Seconds())
 		stream.session.detectBusyFlag(time.Since(start))
 	}()
 
