@@ -6,6 +6,7 @@ import (
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -174,13 +175,13 @@ func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
 }
 
 func (session *Session) initMetrics() {
-	session.sendFrameDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+	session.sendFrameDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "SendFrameDuration",
 		Help:    "stream 发送数据帧耗时",
 		Buckets: preciseBuckets,
 		ConstLabels: session.metricsTags,
 	})
-	session.dispatchFrameDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+	session.dispatchFrameDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "DispatchFrameDuration",
 		Help:    "session 分发数据帧耗时",
 		Buckets: preciseBuckets,
