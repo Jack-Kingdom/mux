@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
+	"github.com/prometheus/client_golang/prometheus"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ var (
 	ErrSessionTTLExceed = errors.New("session ttl exceed")
 	ErrStreamIdDup      = errors.New("stream id duplicated err")
 	ErrStreamIdNotFound = errors.New("stream id not found")
+	preciseBuckets = []float64{0.001, 0.003, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10}
 )
 
 type roleType uint8
@@ -53,6 +55,7 @@ type Session struct {
 	// session config
 	role         roleType
 	transportTTL time.Duration
+	metricsTags  map[string]string // metrics tags
 
 	// heartbeat config
 	heartBeatSwitch        bool
@@ -67,6 +70,10 @@ type Session struct {
 
 	// private variable
 	createdAt time.Time
+
+	// metrics
+	sendFrameDuration     prometheus.Histogram
+	dispatchFrameDuration prometheus.Histogram
 }
 
 type Option func(*Session)
@@ -110,6 +117,15 @@ func WithBufferManager(allocFunc BufferAllocFunc, recycleFunc BufferRecycleFunc)
 	}
 }
 
+func WithMetricsTag(key, value string) Option {
+	return func(session *Session) {
+		if session.metricsTags == nil {
+			session.metricsTags = make(map[string]string)
+		}
+		session.metricsTags[key] = value
+	}
+}
+
 func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
 	currentCtx, cancel := context.WithCancel(ctx)
 	session := &Session{
@@ -140,7 +156,10 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 
 	session.streamIdCounter = uint32(session.role) // 初始化 streamId 计数器
 
-	// 维护任务
+	// 初始化 metrics
+	session.initMetrics()
+
+	// 维护 goroutine
 	go session.recvLoop()
 	go session.sendLoop()
 	if session.heartBeatSwitch {
@@ -152,6 +171,21 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 
 func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
 	return NewSessionContext(context.TODO(), conn, options...)
+}
+
+func (session *Session) initMetrics() {
+	session.sendFrameDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "SendFrameDuration",
+		Help:    "stream 发送数据帧耗时",
+		Buckets: preciseBuckets,
+		ConstLabels: session.metricsTags,
+	})
+	session.dispatchFrameDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "DispatchFrameDuration",
+		Help:    "session 分发数据帧耗时",
+		Buckets: preciseBuckets,
+		ConstLabels: session.metricsTags,
+	})
 }
 
 func (session *Session) StreamCount() int {
@@ -302,7 +336,7 @@ func (session *Session) recvLoop() {
 					}
 					continue
 				case dataFrame := <-stream.readyReadChan:
-					DispatchFrameDuration.Observe(time.Since(start).Seconds())
+					session.dispatchFrameDuration.Observe(time.Since(start).Seconds())
 					session.detectBusyFlag(time.Since(start))
 
 					// 注意这个地方需要处理拆包和粘包的问题
