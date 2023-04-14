@@ -9,11 +9,14 @@ import (
 type cmdType byte
 
 const (
-	cmdSYN  cmdType = iota // stream open
-	cmdFIN                 // stream close, a.k.a EOF mark
-	cmdPSH                 // payload push
-	cmdPING                // ping
-	cmdPONG                // pong
+	cmdSyn cmdType = iota // stream open
+	cmdSynAck
+	cmdFin // stream close, a.k.a EOF mark
+	cmdFinAck
+	cmdPsh // payload push
+	cmdPshAck
+	cmdPing // ping
+	cmdPong // pong
 )
 
 const (
@@ -47,7 +50,7 @@ func (frame *Frame) StreamId() uint32 {
 
 func (frame *Frame) checkCmd() error {
 	switch frame.cmd {
-	case cmdSYN, cmdFIN, cmdPSH, cmdPING, cmdPONG:
+	case cmdSyn, cmdFin, cmdPsh, cmdPing, cmdPong:
 		return nil
 	default:
 		return UnknownCmdErr

@@ -20,6 +20,7 @@ type Stream struct {
 	cancel        context.CancelFunc
 	readDeadline  time.Time
 	writeDeadline time.Time
+	createdAt     time.Time
 }
 
 func (stream *Stream) Done() <-chan struct{} {
@@ -33,7 +34,7 @@ func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, err
 		stream.session.detectBusyFlag(time.Since(start))
 	}()
 
-	frame := NewFrameContext(stream.ctx, cmdPSH, stream.id, buffer)
+	frame := NewFrameContext(stream.ctx, cmdPsh, stream.id, buffer)
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
@@ -58,7 +59,7 @@ func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, err
 
 func (stream *Stream) Write(buffer []byte) (int, error) {
 	if stream.writeDeadline.After(time.Now()) {
-		ctx , cancel := context.WithDeadline(context.TODO(), stream.writeDeadline)
+		ctx, cancel := context.WithDeadline(context.TODO(), stream.writeDeadline)
 		defer cancel()
 		return stream.WriteContext(ctx, buffer)
 	}
@@ -66,7 +67,7 @@ func (stream *Stream) Write(buffer []byte) (int, error) {
 }
 
 func (stream *Stream) ReadContext(ctx context.Context, buffer []byte) (int, error) {
-	frame := NewFrameContext(stream.ctx, cmdPSH, stream.id, buffer)
+	frame := NewFrameContext(stream.ctx, cmdPsh, stream.id, buffer)
 
 	select {
 	case <-ctx.Done():
@@ -91,12 +92,16 @@ func (stream *Stream) ReadContext(ctx context.Context, buffer []byte) (int, erro
 
 func (stream *Stream) Read(buffer []byte) (int, error) {
 	if stream.readDeadline.After(time.Now()) {
-		ctx , cancel := context.WithDeadline(context.TODO(), stream.readDeadline)
+		ctx, cancel := context.WithDeadline(context.TODO(), stream.readDeadline)
 		defer cancel()
 		return stream.ReadContext(ctx, buffer)
 	}
 
 	return stream.ReadContext(context.TODO(), buffer)
+}
+
+func (stream *Stream) Lifetime() time.Duration {
+	return time.Since(stream.createdAt)
 }
 
 func (stream *Stream) IsClose() bool {
@@ -109,6 +114,8 @@ func (stream *Stream) IsClose() bool {
 }
 
 func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
+	streamLifetimeDuration.Observe(stream.Lifetime().Seconds())
+
 	err := stream.session.unregisterStream(stream)
 	if err != nil {
 		return err
@@ -119,7 +126,7 @@ func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
 		return ErrSessionClosed
 	case <-stream.ctx.Done():
 		return ErrStreamClosed
-	case stream.session.readyWriteChan <- NewFrameContext(stream.ctx, cmdFIN, stream.id, nil):
+	case stream.session.readyWriteChan <- NewFrameContext(stream.ctx, cmdFin, stream.id, nil):
 		stream.cancel()
 		return nil
 	}

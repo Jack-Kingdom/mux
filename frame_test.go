@@ -6,7 +6,7 @@ import (
 )
 
 func TestFrame_MarshalHeader(t *testing.T) {
-	frame := NewFrameContext(context.TODO(), cmdSYN, 1, []byte{1, 2, 3})
+	frame := NewFrameContext(context.TODO(), cmdSyn, 1, []byte{1, 2, 3})
 
 	buffer := make([]byte, 100)
 	n, err := frame.MarshalHeader(buffer)

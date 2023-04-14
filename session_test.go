@@ -20,7 +20,7 @@ const (
 
 var (
 	testPayload = "helloworld"
-	mutex sync.Mutex
+	mutex       sync.Mutex
 )
 
 func TestSession(t *testing.T) {
@@ -31,7 +31,7 @@ func TestSession(t *testing.T) {
 		log.Println(http.ListenAndServe(":6060", nil))
 	}()
 
-	ctx, cancel := context.WithTimeout(context.TODO(), 5 * time.Second)
+	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 	defer cancel()
 
 	client, server := dsaIo.NewMemoryConnPeer()
@@ -39,7 +39,7 @@ func TestSession(t *testing.T) {
 	defer server.Close()
 
 	go func() {
-		serverSession := NewSession(server, WithRole(RoleServer), WithBufferSize(bufferLength))
+		serverSession := NewSession(server, WithRole(RoleServer), WithBufferSize(bufferLength), WithTTL(5*time.Second))
 
 		for {
 			stream, err := serverSession.AcceptStream(ctx)
@@ -68,7 +68,7 @@ func TestSession(t *testing.T) {
 		}
 	}()
 
-	clientSession := NewSession(client, WithRole(RoleClient), WithBufferSize(bufferLength))
+	clientSession := NewSession(client, WithRole(RoleClient), WithBufferSize(bufferLength), WithHeartBeatSwitch(true), WithHeartBeatInterval(2*time.Second))
 
 	for i := 0; i < 4; i++ {
 		stream, err := clientSession.OpenStream(ctx)
@@ -145,12 +145,12 @@ func BenchmarkSession(b *testing.B) {
 		serverSession := NewSession(server, WithRole(RoleServer), WithBufferSize(bufferLength))
 
 		clientStream, err := clientSession.OpenStream(ctx)
-		if err!=nil {
+		if err != nil {
 			b.Errorf("open stream error: %s", err)
 		}
 
 		serverStream, err := serverSession.AcceptStream(ctx)
-		if err!=nil {
+		if err != nil {
 			b.Errorf("accept stream error: %s", err)
 		}
 

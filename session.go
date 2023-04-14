@@ -37,11 +37,13 @@ func (role roleType) String() string {
 }
 
 type Session struct {
-	conn            io.ReadWriteCloser
-	streams         map[uint32]*Stream
-	streamMutex     sync.Mutex
-	streamIdCounter uint32
-	isBusy          bool
+	conn                   io.ReadWriteCloser
+	openStreams            map[uint32]*Stream
+	openStreamsMutex       sync.Mutex
+	establishedStreams     map[uint32]*Stream
+	establishedStreamMutex sync.Mutex
+	streamIdCounter        uint32
+	isBusy                 bool // todo better metrics api
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -113,13 +115,13 @@ func WithBufferManager(allocFunc BufferAllocFunc, recycleFunc BufferRecycleFunc)
 func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
 	currentCtx, cancel := context.WithCancel(ctx)
 	session := &Session{
-		conn:            conn,
-		streams:         make(map[uint32]*Stream, 64),
-		readyWriteChan:  make(chan *Frame),
-		readyAcceptChan: make(chan *Frame),
-		err:             nil,
-		ctx:             currentCtx,
-		cancel:          cancel,
+		conn:               conn,
+		establishedStreams: make(map[uint32]*Stream, 64),
+		readyWriteChan:     make(chan *Frame),
+		readyAcceptChan:    make(chan *Frame),
+		err:                nil,
+		ctx:                currentCtx,
+		cancel:             cancel,
 
 		role:              RoleClient,
 		transportTTL:      60 * time.Second,
@@ -155,7 +157,7 @@ func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
 }
 
 func (session *Session) StreamCount() int {
-	return len(session.streams)
+	return len(session.establishedStreams)
 }
 
 /*
@@ -171,7 +173,7 @@ func (session *Session) Ctx() context.Context {
 
 // Lifetime 用以获取当前 session 的存在时间
 func (session *Session) Lifetime() time.Duration {
-	return time.Now().Sub(session.createdAt)
+	return time.Since(session.createdAt)
 }
 
 func (session *Session) IsClose() bool {
@@ -186,6 +188,9 @@ func (session *Session) IsClose() bool {
 func (session *Session) Close() error {
 	session.cancel()
 	_ = session.conn.Close()
+
+	sessionLifetimeDuration.Observe(session.Lifetime().Seconds())
+
 	return session.err
 }
 
@@ -249,8 +254,8 @@ func (session *Session) recvLoop() {
 			ttlTicker.Reset(session.transportTTL) // 收到数据包，重置 ttl
 
 			switch header.cmd {
-			case cmdSYN:
-				synFrame := NewFrameContext(session.ctx, cmdSYN, header.streamId, nil)
+			case cmdSyn:
+				synFrame := NewFrameContext(session.ctx, cmdSyn, header.streamId, nil)
 				select {
 				case <-session.ctx.Done():
 					return
@@ -260,7 +265,7 @@ func (session *Session) recvLoop() {
 					case <-synFrame.ctx.Done():
 					}
 				}
-			case cmdPSH:
+			case cmdPsh:
 				stream, err := session.getStream(header.streamId)
 				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
 					// 此处没有拿到 stream，可能被关闭了，主动关闭连接时需通知远程进行关闭，此处读取剩余的数据包并丢弃
@@ -324,7 +329,7 @@ func (session *Session) recvLoop() {
 
 					dataFrame.Close() //读取完成后关闭此 frame
 				}
-			case cmdFIN: // 收到远程的关闭通知，被动关闭
+			case cmdFin: // 收到远程的关闭通知，被动关闭
 				stream, err := session.getStream(header.streamId)
 				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
 					// 这个 stream 可能已经被关闭了,直接返回就可以了
@@ -333,10 +338,10 @@ func (session *Session) recvLoop() {
 				// 被动关闭，不需要通知 remote
 				stream.cancel()
 				_ = session.unregisterStream(stream)
-			case cmdPING:
-				frame := NewFrameContext(session.ctx, cmdPONG, 0, nil)
+			case cmdPing:
+				frame := NewFrameContext(session.ctx, cmdPong, 0, nil)
 				session.readyWriteChan <- frame
-			case cmdPONG:
+			case cmdPong:
 				session.transportRtt = time.Now().Sub(session.heartBeatSentTimestamp)
 			}
 		}
@@ -365,7 +370,7 @@ func (session *Session) sendLoop() {
 				return
 			}
 
-			if frame.cmd == cmdPSH {
+			if frame.cmd == cmdPsh {
 				n, err = session.conn.Write(frame.payload[:frame.dataLength])
 				if err != nil {
 					session.CloseWithErr(fmt.Errorf("session.sendLoop write payload error: %w", err))
@@ -387,7 +392,7 @@ func (session *Session) heartBeatLoop() {
 		case <-session.ctx.Done():
 			return
 		case <-ticker.C:
-			frame := NewFrameContext(session.ctx, cmdPING, 0, nil)
+			frame := NewFrameContext(session.ctx, cmdPing, 0, nil)
 			session.readyWriteChan <- frame
 			session.heartBeatSentTimestamp = time.Now()
 		}
@@ -406,14 +411,15 @@ func (session *Session) newStream(streamId uint32) *Stream {
 		readyReadChan: make(chan *Frame),
 		ctx:           ctx,
 		cancel:        cancel,
+		createdAt:     time.Now(),
 	}
 }
 
 func (session *Session) getStream(streamId uint32) (*Stream, error) {
-	session.streamMutex.Lock()
-	defer session.streamMutex.Unlock()
+	session.establishedStreamMutex.Lock()
+	defer session.establishedStreamMutex.Unlock()
 
-	if stream, ok := session.streams[streamId]; ok {
+	if stream, ok := session.establishedStreams[streamId]; ok {
 		return stream, nil
 	} else {
 		return nil, ErrStreamIdNotFound
@@ -421,30 +427,36 @@ func (session *Session) getStream(streamId uint32) (*Stream, error) {
 }
 
 func (session *Session) registerStream(stream *Stream) error {
-	session.streamMutex.Lock()
-	defer session.streamMutex.Unlock()
+	session.establishedStreamMutex.Lock()
+	defer session.establishedStreamMutex.Unlock()
 
-	if _, ok := session.streams[stream.id]; ok {
+	if _, ok := session.establishedStreams[stream.id]; ok {
 		return ErrStreamIdDup
 	}
 
-	session.streams[stream.id] = stream
+	session.establishedStreams[stream.id] = stream
 	return nil
 }
 
 func (session *Session) unregisterStream(stream *Stream) error {
-	session.streamMutex.Lock()
-	defer session.streamMutex.Unlock()
+	session.establishedStreamMutex.Lock()
+	defer session.establishedStreamMutex.Unlock()
 
-	if _, ok := session.streams[stream.id]; ok {
-		delete(session.streams, stream.id)
+	if _, ok := session.establishedStreams[stream.id]; ok {
+		delete(session.establishedStreams, stream.id)
 		return nil
 	} else {
 		return ErrStreamIdNotFound
 	}
 }
 
-// OpenStream 创建一个新的 stream
+// OpenStreamNoDelay todo
+// OpenStreamNoDelay create a stream immediately, not confirm another side stream established
+func (session *Session) OpenStreamNoDelay(ctx context.Context) (*Stream, error) {
+	return nil, nil
+}
+
+// OpenStream create a new established stream connection
 func (session *Session) OpenStream(ctx context.Context) (*Stream, error) {
 	if session.IsClose() {
 		return nil, ErrSessionClosed
@@ -452,7 +464,7 @@ func (session *Session) OpenStream(ctx context.Context) (*Stream, error) {
 
 	streamId := session.genStreamId()
 	stream := session.newStream(streamId)
-	frame := NewFrameContext(ctx, cmdSYN, streamId, nil)
+	frame := NewFrameContext(ctx, cmdSyn, streamId, nil)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
