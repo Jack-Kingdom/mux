@@ -3,10 +3,16 @@ package mux
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"time"
+)
+
+const (
+	maxAge = 2 * time.Hour
+	ageBuckets = 10
 )
 
 var (
-	preciseBuckets = []float64{0.001, 0.003, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 180, 360, 600, 1800}
+	preciseBuckets = []float64{0.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5}
 )
 
 var (
@@ -22,15 +28,17 @@ var (
 		Buckets: preciseBuckets,
 	})
 
-	sessionLifetimeDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+	sessionLifetimeDuration = promauto.NewSummary(prometheus.SummaryOpts{
 		Name:    "SessionLifetimeDuration",
 		Help:    "session 存活时间",
-		Buckets: preciseBuckets,
+		MaxAge: maxAge,
+		AgeBuckets: ageBuckets,
 	})
 
-	streamLifetimeDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+	streamLifetimeDuration = promauto.NewSummary(prometheus.SummaryOpts{
 		Name:    "StreamLifetimeDuration",
 		Help:    "stream 持续时间",
-		Buckets: preciseBuckets,
+		MaxAge: maxAge,
+		AgeBuckets: ageBuckets,
 	})
 )
