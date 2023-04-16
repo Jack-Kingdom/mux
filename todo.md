@@ -1,3 +1,4 @@
 ### todo
 
 - 加入了性能基准测试，目前 io 性能只有 1350MB 左右
+- better rtt calculation

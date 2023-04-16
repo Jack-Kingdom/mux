@@ -28,12 +28,6 @@ func (stream *Stream) Done() <-chan struct{} {
 }
 
 func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, error) {
-	start := time.Now()
-	defer func() {
-		sendFrameDuration.Observe(time.Since(start).Seconds())
-		stream.session.detectBusyFlag(time.Since(start))
-	}()
-
 	frame := NewFrameContext(stream.ctx, cmdPsh, stream.id, buffer)
 	select {
 	case <-ctx.Done():

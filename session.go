@@ -43,7 +43,7 @@ type Session struct {
 	establishedStreams     map[uint32]*Stream
 	establishedStreamMutex sync.Mutex
 	streamIdCounter        uint32
-	isBusy                 bool // todo better metrics api
+	busyFlag			   int32 // 0: false, 1: true
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -200,15 +200,15 @@ func (session *Session) CloseWithErr(err error) {
 }
 
 func (session *Session) IsBusy() bool {
-	return session.isBusy
+	return session.busyFlag == 0
 }
 
-func (session *Session) detectBusyFlag(duration time.Duration) {
-	if duration > 100*time.Millisecond {
-		session.isBusy = true
-	} else {
-		session.isBusy = false
-	}
+func (session *Session) AcquireBusyFlag() {
+	atomic.AddInt32(&session.busyFlag, 1)
+}
+
+func (session *Session) ReleaseBusyFlag() {
+	atomic.AddInt32(&session.busyFlag, -1)
 }
 
 func (session *Session) recvLoop() {
@@ -243,8 +243,9 @@ func (session *Session) recvLoop() {
 				return
 			}
 
-			var header Frame
+			session.AcquireBusyFlag()	// 获取 busyFlag
 
+			var header Frame
 			_, err = header.UnMarshalHeader(buffer[:n])
 			if err != nil {
 				session.CloseWithErr(fmt.Errorf("session.recvLoop unmarshal header error: %w", err))
@@ -306,7 +307,6 @@ func (session *Session) recvLoop() {
 					continue
 				case dataFrame := <-stream.readyReadChan:
 					dispatchFrameDuration.Observe(time.Since(start).Seconds())
-					session.detectBusyFlag(time.Since(start))
 
 					// 注意这个地方需要处理拆包和粘包的问题
 					if len(dataFrame.payload) < int(header.dataLength) {
@@ -344,6 +344,8 @@ func (session *Session) recvLoop() {
 			case cmdPong:
 				session.transportRtt = time.Now().Sub(session.heartBeatSentTimestamp)
 			}
+
+			session.ReleaseBusyFlag()	// 释放 busyFlag
 		}
 	}
 }
@@ -357,6 +359,8 @@ func (session *Session) sendLoop() {
 		case <-session.ctx.Done():
 			return
 		case frame := <-session.readyWriteChan:
+			session.AcquireBusyFlag()	// 获取 busyFlag
+
 			// write header
 			n, err := frame.MarshalHeader(buffer)
 			if err != nil {
@@ -378,6 +382,7 @@ func (session *Session) sendLoop() {
 				}
 			}
 			frame.Close() // 标记当前 frame 处理完毕
+			session.ReleaseBusyFlag()	// 释放 busyFlag
 		}
 	}
 }
