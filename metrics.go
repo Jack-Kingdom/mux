@@ -3,12 +3,6 @@ package mux
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"time"
-)
-
-const (
-	maxAge = 2 * time.Hour
-	ageBuckets = 10
 )
 
 var (
@@ -29,16 +23,12 @@ var (
 	})
 
 	sessionLifetimeDurationSummary = promauto.NewSummary(prometheus.SummaryOpts{
-		Name:    "SessionLifetimeDurationSummary",
-		Help:    "session 存活时间",
-		MaxAge: maxAge,
-		AgeBuckets: ageBuckets,
+		Name: "SessionLifetimeDurationSummary",
+		Help: "session 存活时间",
 	})
 
 	streamLifetimeDurationSummary = promauto.NewSummary(prometheus.SummaryOpts{
-		Name:    "StreamLifetimeDurationSummary",
-		Help:    "stream 持续时间",
-		MaxAge: maxAge,
-		AgeBuckets: ageBuckets,
+		Name: "StreamLifetimeDurationSummary",
+		Help: "stream 持续时间",
 	})
 )
