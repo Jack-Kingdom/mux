@@ -114,7 +114,7 @@ func (stream *Stream) IsClose() bool {
 }
 
 func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
-	streamLifetimeDuration.Observe(stream.Lifetime().Seconds())
+	streamLifetimeDurationSummary.Observe(stream.Lifetime().Seconds())
 
 	err := stream.session.unregisterStream(stream)
 	if err != nil {

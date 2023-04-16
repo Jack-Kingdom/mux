@@ -189,7 +189,7 @@ func (session *Session) Close() error {
 	session.cancel()
 	_ = session.conn.Close()
 
-	sessionLifetimeDuration.Observe(session.Lifetime().Seconds())
+	sessionLifetimeDurationSummary.Observe(session.Lifetime().Seconds())
 
 	return session.err
 }
