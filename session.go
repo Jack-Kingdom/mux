@@ -381,6 +381,7 @@ func (session *Session) sendLoop() {
 		case <-session.ctx.Done():
 			return
 		case frame := <-session.readyWriteChan:
+			startTimestamp := time.Now()
 			session.AcquireBusyFlag() // 获取 busyFlag
 
 			// write header
@@ -404,6 +405,8 @@ func (session *Session) sendLoop() {
 				}
 			}
 			frame.Close()             // 标记当前 frame 处理完毕
+
+			sendFrameDuration.Observe(time.Since(startTimestamp).Seconds())
 			session.ReleaseBusyFlag() // 释放 busyFlag
 		}
 	}
