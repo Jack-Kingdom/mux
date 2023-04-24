@@ -121,11 +121,14 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 	session := &Session{
 		conn:               conn,
 		establishedStreams: make(map[uint32]*Stream, 64),
-		readyWriteChan:     make(chan *Frame),
-		readyAcceptChan:    make(chan *Frame),
-		err:                nil,
-		ctx:                currentCtx,
-		cancel:             cancel,
+
+		busyTriggerChan: make(chan NoneType),
+		idleTriggerChan: make(chan NoneType),
+		readyWriteChan:  make(chan *Frame),
+		readyAcceptChan: make(chan *Frame),
+		err:             nil,
+		ctx:             currentCtx,
+		cancel:          cancel,
 
 		role:              RoleClient,
 		transportTTL:      60 * time.Second,
@@ -404,7 +407,7 @@ func (session *Session) sendLoop() {
 					return
 				}
 			}
-			frame.Close()             // 标记当前 frame 处理完毕
+			frame.Close() // 标记当前 frame 处理完毕
 
 			sendFrameDuration.Observe(time.Since(startTimestamp).Seconds())
 			session.ReleaseBusyFlag() // 释放 busyFlag
