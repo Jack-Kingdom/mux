@@ -2,6 +2,7 @@ package mux
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
@@ -63,8 +64,9 @@ type Session struct {
 	// heartbeat config
 	heartBeatSwitch        bool
 	heartBeatInterval      time.Duration
-	heartBeatSentTimestamp time.Time     // 发送心跳包的时间戳
+	heartBeatSentTimestamp time.Time     // todo remove this
 	transportRtt           time.Duration // 根据心跳包计算出的 rtt
+	transportRto           time.Duration
 
 	// session buffer config
 	bufferSize    int
@@ -295,15 +297,13 @@ func (session *Session) recvLoop() {
 				stream, err := session.getStream(header.streamId)
 				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
 					// 此处没有拿到 stream，可能被关闭了，主动关闭连接时需通知远程进行关闭，此处读取剩余的数据包并丢弃
-					hasRead := 0
-					for hasRead < int(header.dataLength) {
-						n, err := session.conn.Read(buffer[:header.dataLength])
+
+					for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
+						n, err = session.conn.Read(buffer[:header.dataLength])
 						if err != nil {
 							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 							return
 						}
-
-						hasRead += n
 					}
 					continue
 				}
@@ -319,15 +319,13 @@ func (session *Session) recvLoop() {
 					return
 				case <-stream.ctx.Done():
 					// 当前 stream 被关闭了，读取剩下的数据包并丢弃
-					hasRead := 0
-					for hasRead < int(header.dataLength) {
-						n, err := session.conn.Read(buffer[:header.dataLength])
+
+					for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
+						n, err = session.conn.Read(buffer[:header.dataLength])
 						if err != nil {
 							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 							return
 						}
-
-						hasRead += n
 					}
 					continue
 				case dataFrame := <-stream.readyReadChan:
@@ -340,18 +338,14 @@ func (session *Session) recvLoop() {
 					}
 
 					dataFrame.dataLength = header.dataLength
-					hasRead := 0
-					for hasRead < int(header.dataLength) {
-						n, err := session.conn.Read(dataFrame.payload[hasRead:header.dataLength])
+					for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
+						n, err = session.conn.Read(dataFrame.payload[hasRead:header.dataLength])
 						if err != nil {
 							dataFrame.Close()
 							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 							return
 						}
-
-						hasRead += n
 					}
-
 					dataFrame.Close() //读取完成后关闭此 frame
 				}
 			case cmdFin: // 收到远程的关闭通知，被动关闭
@@ -364,10 +358,43 @@ func (session *Session) recvLoop() {
 				stream.cancel()
 				_ = session.unregisterStream(stream)
 			case cmdPing:
-				frame := NewFrameContext(session.ctx, cmdPong, 0, nil)
-				session.readyWriteChan <- frame
+				if header.dataLength == 0 { // compatible with old version todo remove this
+					frame := NewFrameContext(session.ctx, cmdPong, 0, nil)
+					session.readyWriteChan <- frame
+				} else {
+					for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
+						n, err = session.conn.Read(buffer[hasRead:header.dataLength])
+						if err != nil {
+							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+							return
+						}
+					}
+					frame := NewFrameContext(session.ctx, cmdPong, 0, buffer[:header.dataLength])
+					session.readyWriteChan <- frame
+				}
 			case cmdPong:
-				session.transportRtt = time.Now().Sub(session.heartBeatSentTimestamp)
+				if header.dataLength == 0 { // compatible with old version todo remove this
+					session.transportRtt = time.Now().Sub(session.heartBeatSentTimestamp)
+				} else {
+					if header.dataLength != heartBeatPayloadSize {
+						session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %s", "read pong data length error"))
+						return
+					}
+
+					for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
+						n, err = session.conn.Read(buffer[hasRead:header.dataLength])
+						if err != nil {
+							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+							return
+						}
+					}
+
+					unixMilli := binary.BigEndian.Uint64(buffer[:heartBeatPayloadSize])
+					start := time.UnixMilli(int64(unixMilli))
+
+					session.transportRtt = time.Since(start)
+					rttDuration.Observe(session.transportRtt.Seconds())
+				}
 			}
 
 			session.ReleaseBusyFlag() // 释放 busyFlag
@@ -400,7 +427,7 @@ func (session *Session) sendLoop() {
 				return
 			}
 
-			if frame.cmd == cmdPsh {
+			if frame.dataLength > 0 {
 				n, err = session.conn.Write(frame.payload[:frame.dataLength])
 				if err != nil {
 					session.CloseWithErr(fmt.Errorf("session.sendLoop write payload error: %w", err))
@@ -415,19 +442,29 @@ func (session *Session) sendLoop() {
 	}
 }
 
+const (
+	heartBeatPayloadSize = 8
+)
+
 // 持续地发送心跳包
 func (session *Session) heartBeatLoop() {
 	ticker := time.NewTicker(session.heartBeatInterval)
 	defer ticker.Stop()
+
+	heartBeatPayload := session.bufferAlloc(heartBeatPayloadSize)
+	defer session.bufferRecycle(heartBeatPayload)
 
 	for {
 		select {
 		case <-session.ctx.Done():
 			return
 		case <-ticker.C:
-			frame := NewFrameContext(session.ctx, cmdPing, 0, nil)
+
+			unixMilli := uint64(time.Now().UnixMilli())
+			binary.BigEndian.PutUint64(heartBeatPayload, unixMilli)
+
+			frame := NewFrameContext(session.ctx, cmdPing, 0, heartBeatPayload[:heartBeatPayloadSize])
 			session.readyWriteChan <- frame
-			session.heartBeatSentTimestamp = time.Now()
 		}
 	}
 }

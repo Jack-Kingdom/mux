@@ -23,6 +23,12 @@ var (
 		Buckets: preciseBuckets,
 	})
 
+	rttDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "RttDuration",
+		Help:    "session rtt 耗时",
+		Buckets: preciseBuckets,
+	})
+
 	sessionLifetimeDurationSummary = promauto.NewSummary(prometheus.SummaryOpts{
 		Name: "SessionLifetimeDurationSummary",
 		Help: "session 存活时间",
