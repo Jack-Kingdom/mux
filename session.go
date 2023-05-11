@@ -7,6 +7,7 @@ import (
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
 	"io"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,8 +65,10 @@ type Session struct {
 	// heartbeat config
 	heartBeatSwitch        bool
 	heartBeatInterval      time.Duration
-	heartBeatSentTimestamp time.Time     // todo remove this
-	transportRtt           time.Duration // 根据心跳包计算出的 rtt
+	heartBeatSentTimestamp time.Time // todo remove this
+	transportRtt           time.Duration
+	transportSRtt          time.Duration
+	transportRttVar        time.Duration
 	transportRto           time.Duration
 
 	// session buffer config
@@ -230,12 +233,16 @@ func (session *Session) AcquireBusyFlag() {
 }
 
 func (session *Session) ReleaseBusyFlag() {
-	select {
-	case session.idleTriggerChan <- NoneType{}:
-	default:
-		// do nothing
-	}
 	atomic.AddInt32(&session.busyFlag, -1)
+
+	// only trigger idle when busyFlag == 0
+	if atomic.LoadInt32(&session.busyFlag) == 0 {
+		select {
+		case session.idleTriggerChan <- NoneType{}:
+		default:
+			// do nothing
+		}
+	}
 }
 
 func (session *Session) recvLoop() {
@@ -261,6 +268,11 @@ func (session *Session) recvLoop() {
 			// 首先处理 header
 			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
+				// todo optimize here, release busy flag when deadline exceed
+				//if errors.Is(err, os.ErrDeadlineExceeded) {
+				//	session.ReleaseBusyFlag()
+				//	continue
+				//}
 				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %w", err))
 				return
 			}
@@ -392,8 +404,13 @@ func (session *Session) recvLoop() {
 					unixMilli := binary.BigEndian.Uint64(buffer[:heartBeatPayloadSize])
 					start := time.UnixMilli(int64(unixMilli))
 
+					// ref: https://www.rfc-editor.org/rfc/rfc6298
 					session.transportRtt = time.Since(start)
-					rttDuration.Observe(session.transportRtt.Seconds())
+					session.transportSRtt = time.Duration((1-sRttSmoothingFactor)*float64(session.SRtt()) + sRttSmoothingFactor*float64(session.Rtt()))
+					session.transportRttVar = time.Duration((1-rttVarBeta)*float64(session.RttVar()) + rttVarBeta*math.Abs(float64(session.Rtt())-float64(session.SRtt())))
+					session.transportRto = session.transportSRtt + rtoK*session.transportRttVar
+
+					rttDuration.Observe(session.Rto().Seconds()) // todo remove this
 				}
 			}
 
@@ -444,6 +461,9 @@ func (session *Session) sendLoop() {
 
 const (
 	heartBeatPayloadSize = 8
+	sRttSmoothingFactor  = 0.125
+	rttVarBeta           = 0.25
+	rtoK                 = 4
 )
 
 // 持续地发送心跳包
@@ -469,8 +489,37 @@ func (session *Session) heartBeatLoop() {
 	}
 }
 
-func (session *Session) RTT() time.Duration {
+func (session *Session) Rtt() time.Duration {
+	// assume 500ms if rtt is 0
+	if session.transportRtt == 0 {
+		return 500 * time.Millisecond
+	}
+
 	return session.transportRtt
+}
+
+func (session *Session) SRtt() time.Duration {
+	if session.transportSRtt == 0 {
+		return session.Rtt()
+	}
+
+	return session.transportSRtt
+}
+
+func (session *Session) RttVar() time.Duration {
+	if session.transportRttVar == 0 {
+		return session.Rtt() / 2
+	}
+
+	return session.transportRttVar
+}
+
+func (session *Session) Rto() time.Duration {
+	if session.transportRto == 0 {
+		return session.SRtt() + rtoK*session.RttVar()
+	}
+
+	return session.transportRto
 }
 
 func (session *Session) newStream(streamId uint32) *Stream {
