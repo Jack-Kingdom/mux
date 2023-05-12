@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
+	"go.uber.org/zap"
 	"math"
 	"net"
 	"sync"
@@ -517,6 +518,15 @@ func (session *Session) RttVar() time.Duration {
 func (session *Session) Rto() time.Duration {
 	if session.transportRto == 0 {
 		return session.SRtt() + rtoK*session.RttVar()
+	}
+
+	if session.transportRto < 80*time.Millisecond {
+		zap.L().Warn("transportRto is too small, use 80ms instead", zap.Duration("transportRto", session.transportRto))
+		return 80 * time.Millisecond
+	}
+	if session.transportRto > 10*time.Second {
+		zap.L().Warn("transportRto is too large, use 10s instead", zap.Duration("transportRto", session.transportRto))
+		return 10 * time.Second
 	}
 
 	return session.transportRto
