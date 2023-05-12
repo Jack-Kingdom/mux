@@ -68,10 +68,14 @@ type Session struct {
 	heartBeatSwitch        bool
 	heartBeatInterval      time.Duration
 	heartBeatSentTimestamp time.Time // todo remove this
-	transportRtt           time.Duration
-	transportSRtt          time.Duration
-	transportRttVar        time.Duration
-	transportRto           time.Duration
+
+	// transport relevant
+	transportRtt         time.Duration
+	transportSRtt        time.Duration
+	transportRttVar      time.Duration
+	transportRto         time.Duration
+	transportMinRtoBound time.Duration
+	transportMaxRtoBound time.Duration
 
 	// session buffer config
 	bufferSize    int
@@ -101,6 +105,13 @@ func WithHeartBeatSwitch(choose bool) Option {
 func WithHeartBeatInterval(interval time.Duration) Option {
 	return func(session *Session) {
 		session.heartBeatInterval = interval
+	}
+}
+
+func WithTransportRtoBound(min, max time.Duration) Option {
+	return func(session *Session) {
+		session.transportMinRtoBound = min
+		session.transportMaxRtoBound = max
 	}
 }
 
@@ -147,6 +158,11 @@ func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *S
 
 	for _, option := range options {
 		option(session)
+	}
+
+	if session.transportMinRtoBound == 0 || session.transportMaxRtoBound == 0 {
+		session.transportMinRtoBound = 100 * time.Millisecond
+		session.transportMaxRtoBound = 500 * time.Millisecond
 	}
 
 	if session.bufferAlloc == nil && session.bufferRecycle == nil {
@@ -527,15 +543,14 @@ func (session *Session) Rto() time.Duration {
 		return session.SRtt() + rtoK*session.RttVar()
 	}
 
-	if session.transportRto < 80*time.Millisecond {
-		zap.L().Warn("transportRto is too small, use 80ms instead", zap.Duration("transportRto", session.transportRto))
-		return 80 * time.Millisecond
+	if session.transportRto < session.transportMinRtoBound {
+		zap.L().Warn("transportRto is too small, use transportMinRtoBound instead", zap.Duration("transportRto", session.transportRto), zap.Duration("transportMinRtoBound", session.transportMinRtoBound))
+		return session.transportMinRtoBound
 	}
-	if session.transportRto > 10*time.Second {
-		zap.L().Warn("transportRto is too large, use 10s instead", zap.Duration("transportRto", session.transportRto))
-		return 10 * time.Second
+	if session.transportRto > session.transportMaxRtoBound {
+		zap.L().Warn("transportRto is too large, use transportMaxRtoBound instead", zap.Duration("transportRto", session.transportRto), zap.Duration("transportMaxRtoBound", session.transportMaxRtoBound))
+		return session.transportMaxRtoBound
 	}
-
 	return session.transportRto
 }
 
