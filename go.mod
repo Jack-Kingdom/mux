@@ -3,7 +3,7 @@ module github.com/Jack-Kingdom/mux
 go 1.18
 
 require (
-	github.com/Jack-Kingdom/go-dsa v0.0.3
+	github.com/Jack-Kingdom/go-dsa v0.0.6
 	github.com/prometheus/client_golang v1.14.0
 	go.uber.org/zap v1.19.1
 )

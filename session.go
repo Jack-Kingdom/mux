@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -213,7 +214,7 @@ func (session *Session) CloseWithErr(err error) {
 }
 
 func (session *Session) IsBusy() bool {
-	return session.busyFlag == 0
+	return atomic.LoadInt32(&session.busyFlag) == 0
 }
 
 func (session *Session) BusyTrigger() <-chan NoneType {
@@ -224,7 +225,7 @@ func (session *Session) IdleTrigger() <-chan NoneType {
 	return session.idleTriggerChan
 }
 
-func (session *Session) AcquireBusyFlag() {
+func (session *Session) acquireBusyFlag() {
 	select {
 	case session.busyTriggerChan <- NoneType{}:
 	default:
@@ -233,7 +234,7 @@ func (session *Session) AcquireBusyFlag() {
 	atomic.AddInt32(&session.busyFlag, 1)
 }
 
-func (session *Session) ReleaseBusyFlag() {
+func (session *Session) releaseBusyFlag() {
 	atomic.AddInt32(&session.busyFlag, -1)
 
 	// only trigger idle when busyFlag == 0
@@ -258,6 +259,7 @@ func (session *Session) recvLoop() {
 	ttlTicker := time.NewTicker(session.transportTTL)
 	defer ttlTicker.Stop()
 
+	var isAcquiredBusyFlag bool
 	for {
 		select {
 		case <-session.ctx.Done():
@@ -267,13 +269,16 @@ func (session *Session) recvLoop() {
 			return
 		default:
 			// 首先处理 header
+			_ = session.conn.SetReadDeadline(time.Now().Add(session.Rto()))
 			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
-				// todo optimize here, release busy flag when deadline exceed
-				//if errors.Is(err, os.ErrDeadlineExceeded) {
-				//	session.ReleaseBusyFlag()
-				//	continue
-				//}
+				if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+					if isAcquiredBusyFlag {
+						session.releaseBusyFlag()
+						isAcquiredBusyFlag = false
+					}
+					continue
+				}
 				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %w", err))
 				return
 			}
@@ -283,7 +288,11 @@ func (session *Session) recvLoop() {
 				return
 			}
 
-			session.AcquireBusyFlag() // 获取 busyFlag
+			_ = session.conn.SetReadDeadline(time.Time{}) // reset read deadline
+			if !isAcquiredBusyFlag {
+				session.acquireBusyFlag()
+				isAcquiredBusyFlag = true
+			}
 
 			var header Frame
 			_, err = header.UnMarshalHeader(buffer[:n])
@@ -414,8 +423,6 @@ func (session *Session) recvLoop() {
 					rttDuration.Observe(session.Rto().Seconds()) // todo remove this
 				}
 			}
-
-			session.ReleaseBusyFlag() // 释放 busyFlag
 		}
 	}
 }
@@ -430,7 +437,7 @@ func (session *Session) sendLoop() {
 			return
 		case frame := <-session.readyWriteChan:
 			startTimestamp := time.Now()
-			session.AcquireBusyFlag() // 获取 busyFlag todo optimize here
+			session.acquireBusyFlag() // 获取 busyFlag todo optimize here
 
 			// write header
 			n, err := frame.MarshalHeader(buffer)
@@ -455,7 +462,7 @@ func (session *Session) sendLoop() {
 			frame.Close() // 标记当前 frame 处理完毕
 
 			sendFrameDuration.Observe(time.Since(startTimestamp).Seconds())
-			session.ReleaseBusyFlag() // 释放 busyFlag
+			session.releaseBusyFlag() // 释放 busyFlag
 		}
 	}
 }
