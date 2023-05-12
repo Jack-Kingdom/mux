@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
-	"io"
 	"math"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,7 +41,7 @@ func (role roleType) String() string {
 type NoneType struct{}
 
 type Session struct {
-	conn                   io.ReadWriteCloser
+	conn                   net.Conn
 	openStreams            map[uint32]*Stream
 	openStreamsMutex       sync.Mutex
 	establishedStreams     map[uint32]*Stream
@@ -121,7 +121,7 @@ func WithBufferManager(allocFunc BufferAllocFunc, recycleFunc BufferRecycleFunc)
 	}
 }
 
-func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
+func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *Session {
 	currentCtx, cancel := context.WithCancel(ctx)
 	session := &Session{
 		conn:               conn,
@@ -164,7 +164,7 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 	return session
 }
 
-func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
+func NewSession(conn net.Conn, options ...Option) *Session {
 	return NewSessionContext(context.TODO(), conn, options...)
 }
 
@@ -429,7 +429,7 @@ func (session *Session) sendLoop() {
 			return
 		case frame := <-session.readyWriteChan:
 			startTimestamp := time.Now()
-			session.AcquireBusyFlag() // 获取 busyFlag
+			session.AcquireBusyFlag() // 获取 busyFlag todo optimize here
 
 			// write header
 			n, err := frame.MarshalHeader(buffer)
