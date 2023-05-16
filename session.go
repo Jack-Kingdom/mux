@@ -7,9 +7,8 @@ import (
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
 	"go.uber.org/zap"
+	"io"
 	"math"
-	"net"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +24,7 @@ var (
 type roleType uint8
 
 const (
-	RoleClient roleType = 1 + iota // 客户端为奇数，服务器端为偶数，这里区分 client 与 server 主要是为了防止 streamId 冲突，在传输过程中二者是对等的
+	RoleClient roleType = 1 + iota // client start with odd number, server start with even number
 	RoleServer
 )
 
@@ -43,7 +42,7 @@ func (role roleType) String() string {
 type NoneType struct{}
 
 type Session struct {
-	conn                   net.Conn
+	conn                   io.ReadWriteCloser
 	openStreams            map[uint32]*Stream
 	openStreamsMutex       sync.Mutex
 	establishedStreams     map[uint32]*Stream
@@ -52,6 +51,7 @@ type Session struct {
 	busyFlag               int32 // 0: false, 1: true
 	busyTriggerChan        chan NoneType
 	idleTriggerChan        chan NoneType
+	busyTimestamp          int64
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -108,16 +108,16 @@ func WithHeartBeatInterval(interval time.Duration) Option {
 	}
 }
 
+func WithTTL(ttl time.Duration) Option {
+	return func(session *Session) {
+		session.transportTTL = ttl
+	}
+}
+
 func WithTransportRtoBound(min, max time.Duration) Option {
 	return func(session *Session) {
 		session.transportMinRtoBound = min
 		session.transportMaxRtoBound = max
-	}
-}
-
-func WithTTL(ttl time.Duration) Option {
-	return func(session *Session) {
-		session.transportTTL = ttl
 	}
 }
 
@@ -134,7 +134,7 @@ func WithBufferManager(allocFunc BufferAllocFunc, recycleFunc BufferRecycleFunc)
 	}
 }
 
-func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *Session {
+func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
 	currentCtx, cancel := context.WithCancel(ctx)
 	session := &Session{
 		conn:               conn,
@@ -172,7 +172,6 @@ func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *S
 
 	session.streamIdCounter = uint32(session.role) // 初始化 streamId 计数器
 
-	// 维护 goroutine
 	go session.recvLoop()
 	go session.sendLoop()
 	if session.heartBeatSwitch {
@@ -182,7 +181,7 @@ func NewSessionContext(ctx context.Context, conn net.Conn, options ...Option) *S
 	return session
 }
 
-func NewSession(conn net.Conn, options ...Option) *Session {
+func NewSession(conn io.ReadWriteCloser, options ...Option) *Session {
 	return NewSessionContext(context.TODO(), conn, options...)
 }
 
@@ -247,14 +246,19 @@ func (session *Session) acquireBusyFlag() {
 	default:
 		// do nothing
 	}
+
+	atomic.StoreInt64(&session.busyTimestamp, time.Now().UnixMilli())
 	atomic.AddInt32(&session.busyFlag, 1)
 }
 
 func (session *Session) releaseBusyFlag() {
 	atomic.AddInt32(&session.busyFlag, -1)
 
-	// only trigger idle when busyFlag == 0
-	if atomic.LoadInt32(&session.busyFlag) == 0 {
+	busyTimestamp := atomic.LoadInt64(&session.busyTimestamp)
+	idleInterval := time.Now().UnixMilli() - busyTimestamp
+
+	// if idle interval is greater than 2 * RTO, trigger idle event
+	if atomic.LoadInt32(&session.busyFlag) == 0 && idleInterval > 2*session.Rto().Milliseconds() {
 		select {
 		case session.idleTriggerChan <- NoneType{}:
 		default:
@@ -275,7 +279,6 @@ func (session *Session) recvLoop() {
 	ttlTicker := time.NewTicker(session.transportTTL)
 	defer ttlTicker.Stop()
 
-	var isAcquiredBusyFlag bool
 	for {
 		select {
 		case <-session.ctx.Done():
@@ -284,17 +287,10 @@ func (session *Session) recvLoop() {
 			session.CloseWithErr(ErrSessionTTLExceed)
 			return
 		default:
+			session.acquireBusyFlag()
 			// 首先处理 header
-			_ = session.conn.SetReadDeadline(time.Now().Add(session.Rto()))
 			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
-				if errors.Is(err, os.ErrDeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-					if isAcquiredBusyFlag {
-						session.releaseBusyFlag()
-						isAcquiredBusyFlag = false
-					}
-					continue
-				}
 				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %w", err))
 				return
 			}
@@ -302,12 +298,6 @@ func (session *Session) recvLoop() {
 			if n < headerSize {
 				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %s", "read header size less than headerSize"))
 				return
-			}
-
-			_ = session.conn.SetReadDeadline(time.Time{}) // reset read deadline
-			if !isAcquiredBusyFlag {
-				session.acquireBusyFlag()
-				isAcquiredBusyFlag = true
 			}
 
 			var header Frame
@@ -439,6 +429,8 @@ func (session *Session) recvLoop() {
 					rttDuration.Observe(session.Rto().Seconds()) // todo remove this
 				}
 			}
+
+			session.releaseBusyFlag()
 		}
 	}
 }
