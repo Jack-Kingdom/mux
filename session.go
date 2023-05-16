@@ -61,12 +61,12 @@ type Session struct {
 	cancel context.CancelFunc
 
 	// session config
-	role         roleType
+	role roleType
 
 	// heartbeat config
-	heartBeatSwitch        bool
-	heartBeatInterval      time.Duration
-	heartBeatTTL time.Duration
+	heartBeatSwitch   bool
+	heartBeatInterval time.Duration
+	heartBeatTTL      time.Duration
 
 	// transport relevant
 	transportRtt         time.Duration
@@ -415,7 +415,7 @@ func (session *Session) recvLoop() {
 				session.transportSRtt = time.Duration((1-sRttSmoothingFactor)*float64(session.SRtt()) + sRttSmoothingFactor*float64(session.Rtt()))
 				session.transportRttVar = time.Duration((1-rttVarBeta)*float64(session.RttVar()) + rttVarBeta*math.Abs(float64(session.Rtt())-float64(session.SRtt())))
 				session.transportRto = session.transportSRtt + rtoK*session.transportRttVar
-
+				zap.L().Debug("session.recvLoop", zap.Duration("transportRtt", session.transportRtt), zap.Duration("transportSRtt", session.transportSRtt), zap.Duration("transportRttVar", session.transportRttVar), zap.Duration("transportRto", session.transportRto))
 				rttDuration.Observe(session.Rto().Seconds()) // todo remove this
 			}
 
