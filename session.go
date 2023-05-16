@@ -62,12 +62,11 @@ type Session struct {
 
 	// session config
 	role         roleType
-	transportTTL time.Duration
 
 	// heartbeat config
 	heartBeatSwitch        bool
 	heartBeatInterval      time.Duration
-	heartBeatSentTimestamp time.Time // todo remove this
+	heartBeatTTL time.Duration
 
 	// transport relevant
 	transportRtt         time.Duration
@@ -110,7 +109,7 @@ func WithHeartBeatInterval(interval time.Duration) Option {
 
 func WithHeartBeatTTL(ttl time.Duration) Option {
 	return func(session *Session) {
-		session.transportTTL = ttl
+		session.heartBeatTTL = ttl
 	}
 }
 
@@ -149,9 +148,9 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 		cancel:          cancel,
 
 		role:              RoleClient,
-		transportTTL:      60 * time.Second,
 		heartBeatSwitch:   false,
 		heartBeatInterval: 30 * time.Second,
+		heartBeatTTL:      365 * 24 * time.Hour,
 		bufferSize:        1024,
 		createdAt:         time.Now(),
 	}
@@ -275,7 +274,7 @@ func (session *Session) recvLoop() {
 		return
 	}
 
-	ttlTicker := time.NewTicker(session.transportTTL)
+	ttlTicker := time.NewTicker(session.heartBeatTTL)
 	defer ttlTicker.Stop()
 
 	for {
@@ -383,7 +382,7 @@ func (session *Session) recvLoop() {
 				stream.cancel()
 				_ = session.unregisterStream(stream)
 			case cmdPing:
-				ttlTicker.Reset(session.transportTTL) // receive heartbeat, reset ttlTicker
+				ttlTicker.Reset(session.heartBeatTTL) // receive heartbeat, reset ttlTicker
 
 				for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
 					n, err = session.conn.Read(buffer[hasRead:header.dataLength])
