@@ -252,8 +252,6 @@ func (session *Session) acquireBusyFlag() {
 }
 
 func (session *Session) releaseBusyFlag() {
-	atomic.AddInt32(&session.busyFlag, -1)
-
 	busyTimestamp := atomic.LoadInt64(&session.busyTimestamp)
 	idleInterval := time.Now().UnixMilli() - busyTimestamp
 
@@ -264,6 +262,7 @@ func (session *Session) releaseBusyFlag() {
 		default:
 			// do nothing
 		}
+		atomic.StoreInt32(&session.busyFlag, 0)
 	}
 }
 
