@@ -39,7 +39,7 @@ func TestSession(t *testing.T) {
 	defer server.Close()
 
 	go func() {
-		serverSession := NewSession(server, WithRole(RoleServer), WithBufferSize(bufferLength), WithTTL(5*time.Second))
+		serverSession := NewSession(server, WithRole(RoleServer), WithBufferSize(bufferLength), WithHeartBeatTTL(5*time.Second))
 
 		for {
 			stream, err := serverSession.AcceptStream(ctx)
