@@ -52,6 +52,7 @@ type Session struct {
 	busyTriggerChan        chan NoneType
 	idleTriggerChan        chan NoneType
 	busyTimestamp          int64
+	finalizers             []func()
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -110,6 +111,12 @@ func WithHeartBeatInterval(interval time.Duration) Option {
 func WithHeartBeatTTL(ttl time.Duration) Option {
 	return func(session *Session) {
 		session.heartBeatTTL = ttl
+	}
+}
+
+func WithFinalizer(finalizer func()) Option {
+	return func(session *Session) {
+		session.finalizers = append(session.finalizers, finalizer)
 	}
 }
 
@@ -219,10 +226,14 @@ func (session *Session) Close() error {
 
 	sessionLifetimeDurationSummary.Observe(session.Lifetime().Seconds())
 
+	for _, finalizer := range session.finalizers {
+		finalizer()
+	}
+
 	return session.err
 }
 
-func (session *Session) CloseWithErr(err error) {
+func (session *Session) CloseWithErr(err error) {	// todo no use of this func
 	session.err = err
 	_ = session.Close()
 }
