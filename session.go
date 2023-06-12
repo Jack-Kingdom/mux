@@ -53,6 +53,7 @@ type Session struct {
 	idleTriggerChan        chan NoneType
 	busyTimestamp          int64
 	finalizers             []func()
+	finalizersMutex        sync.Mutex
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -220,16 +221,30 @@ func (session *Session) IsClose() bool {
 	}
 }
 
-func (session *Session) Close() error {
-	session.cancel()
-	_ = session.conn.Close()
-
-	sessionLifetimeDurationSummary.Observe(session.Lifetime().Seconds())
+func (session *Session) finalize() {
+	session.finalizersMutex.Lock()
+	defer session.finalizersMutex.Unlock()
 
 	for _, finalizer := range session.finalizers {
 		finalizer()
 	}
 
+	if len(session.finalizers) > 0 {
+		session.finalizers = session.finalizers[:0]	// clear executed finalizers
+	}
+}
+
+func (session *Session) Close() error {
+	session.cancel()
+	_ = session.conn.Close()
+
+	sessionLifetimeDurationSummary.Observe(session.Lifetime().Seconds())
+	session.finalize()
+
+	return session.err
+}
+
+func (session *Session) Err() error {
 	return session.err
 }
 
