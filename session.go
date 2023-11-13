@@ -533,12 +533,6 @@ func (session *Session) unregisterStream(stream *Stream) error {
 	}
 }
 
-// OpenStreamNoDelay todo
-// OpenStreamNoDelay create a stream immediately, not confirm another side stream established
-func (session *Session) OpenStreamNoDelay(ctx context.Context) (*Stream, error) {
-	return nil, nil
-}
-
 // OpenStream create a new established stream connection
 func (session *Session) OpenStream(ctx context.Context) (*Stream, error) {
 	if session.IsClose() {
