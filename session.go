@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
-	"go.uber.org/zap"
 	"io"
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,7 +49,6 @@ type Session struct {
 	busyFlag               int32 // 0: false, 1: true
 	busyTriggerChan        chan NoneType
 	idleTriggerChan        chan NoneType
-	busyTimestamp          int64
 	finalizers             []func()
 	finalizersMutex        sync.Mutex
 
@@ -69,14 +66,6 @@ type Session struct {
 	heartBeatSwitch   bool
 	heartBeatInterval time.Duration
 	heartBeatTTL      time.Duration
-
-	// transport relevant
-	transportRtt         time.Duration
-	transportSRtt        time.Duration
-	transportRttVar      time.Duration
-	transportRto         time.Duration
-	transportMinRtoBound time.Duration
-	transportMaxRtoBound time.Duration
 
 	// session buffer config
 	bufferSize    int
@@ -121,13 +110,6 @@ func WithFinalizer(finalizer func()) Option {
 	}
 }
 
-func WithTransportRtoBound(min, max time.Duration) Option {
-	return func(session *Session) {
-		session.transportMinRtoBound = min
-		session.transportMaxRtoBound = max
-	}
-}
-
 func WithBufferSize(sizeLimit int) Option {
 	return func(session *Session) {
 		session.bufferSize = sizeLimit
@@ -165,11 +147,6 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 
 	for _, option := range options {
 		option(session)
-	}
-
-	if session.transportMinRtoBound == 0 || session.transportMaxRtoBound == 0 {
-		session.transportMinRtoBound = 100 * time.Millisecond
-		session.transportMaxRtoBound = 500 * time.Millisecond
 	}
 
 	if session.bufferAlloc == nil && session.bufferRecycle == nil {
@@ -230,7 +207,7 @@ func (session *Session) finalize() {
 	}
 
 	if len(session.finalizers) > 0 {
-		session.finalizers = session.finalizers[:0]	// clear executed finalizers
+		session.finalizers = session.finalizers[:0] // clear executed finalizers
 	}
 }
 
@@ -248,7 +225,7 @@ func (session *Session) Err() error {
 	return session.err
 }
 
-func (session *Session) CloseWithErr(err error) {	// todo no use of this func
+func (session *Session) CloseWithErr(err error) { // todo no use of this func
 	session.err = err
 	_ = session.Close()
 }
@@ -265,6 +242,7 @@ func (session *Session) IdleTrigger() <-chan NoneType {
 	return session.idleTriggerChan
 }
 
+// todo remove this feature
 func (session *Session) acquireBusyFlag() {
 	select {
 	case session.busyTriggerChan <- NoneType{}:
@@ -272,22 +250,18 @@ func (session *Session) acquireBusyFlag() {
 		// do nothing
 	}
 
-	atomic.StoreInt64(&session.busyTimestamp, time.Now().UnixMilli())
 	atomic.AddInt32(&session.busyFlag, 1)
 }
 
+// todo remove this feature
 func (session *Session) releaseBusyFlag() {
-	busyTimestamp := atomic.LoadInt64(&session.busyTimestamp)
-	idleInterval := time.Now().UnixMilli() - busyTimestamp
-
-	// if idle interval is greater than 2 * RTO, trigger idle event
-	if atomic.LoadInt32(&session.busyFlag) == 0 && idleInterval > 2*session.Rto().Milliseconds() {
+	atomic.AddInt32(&session.busyFlag, -1)
+	if atomic.LoadInt32(&session.busyFlag) <= 0 {
 		select {
 		case session.idleTriggerChan <- NoneType{}:
 		default:
 			// do nothing
 		}
-		atomic.StoreInt32(&session.busyFlag, 0)
 	}
 }
 
@@ -435,14 +409,7 @@ func (session *Session) recvLoop() {
 
 				unixMilli := binary.BigEndian.Uint64(buffer[:heartBeatPayloadSize])
 				start := time.UnixMilli(int64(unixMilli))
-
-				// ref: https://www.rfc-editor.org/rfc/rfc6298
-				session.transportRtt = time.Since(start)
-				session.transportSRtt = time.Duration((1-sRttSmoothingFactor)*float64(session.SRtt()) + sRttSmoothingFactor*float64(session.Rtt()))
-				session.transportRttVar = time.Duration((1-rttVarBeta)*float64(session.RttVar()) + rttVarBeta*math.Abs(float64(session.Rtt())-float64(session.SRtt())))
-				session.transportRto = session.transportSRtt + rtoK*session.transportRttVar
-				zap.L().Debug("session.recvLoop", zap.Duration("transportRtt", session.transportRtt), zap.Duration("transportSRtt", session.transportSRtt), zap.Duration("transportRttVar", session.transportRttVar), zap.Duration("transportRto", session.transportRto))
-				rttDuration.Observe(session.Rto().Seconds()) // todo remove this
+				rttDuration.Observe(time.Since(start).Seconds())
 			}
 
 			session.releaseBusyFlag()
@@ -517,47 +484,6 @@ func (session *Session) heartBeatLoop() {
 			session.readyWriteChan <- frame
 		}
 	}
-}
-
-func (session *Session) Rtt() time.Duration {
-	// assume 500ms if rtt is 0
-	if session.transportRtt == 0 {
-		return 500 * time.Millisecond
-	}
-
-	return session.transportRtt
-}
-
-func (session *Session) SRtt() time.Duration {
-	if session.transportSRtt == 0 {
-		return session.Rtt()
-	}
-
-	return session.transportSRtt
-}
-
-func (session *Session) RttVar() time.Duration {
-	if session.transportRttVar == 0 {
-		return session.Rtt() / 2
-	}
-
-	return session.transportRttVar
-}
-
-func (session *Session) Rto() time.Duration {
-	if session.transportRto == 0 {
-		return session.SRtt() + rtoK*session.RttVar()
-	}
-
-	if session.transportRto < session.transportMinRtoBound {
-		zap.L().Warn("transportRto is too small, use transportMinRtoBound instead", zap.Duration("transportRto", session.transportRto), zap.Duration("transportMinRtoBound", session.transportMinRtoBound))
-		return session.transportMinRtoBound
-	}
-	if session.transportRto > session.transportMaxRtoBound {
-		zap.L().Warn("transportRto is too large, use transportMaxRtoBound instead", zap.Duration("transportRto", session.transportRto), zap.Duration("transportMaxRtoBound", session.transportMaxRtoBound))
-		return session.transportMaxRtoBound
-	}
-	return session.transportRto
 }
 
 func (session *Session) newStream(streamId uint32) *Stream {
