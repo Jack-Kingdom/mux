@@ -37,8 +37,6 @@ func (role roleType) String() string {
 	}
 }
 
-type NoneType struct{}
-
 type Session struct {
 	conn                   io.ReadWriteCloser
 	openStreams            map[uint32]*Stream
@@ -46,9 +44,6 @@ type Session struct {
 	establishedStreams     map[uint32]*Stream
 	establishedStreamMutex sync.Mutex
 	streamIdCounter        uint32
-	busyFlag               int32 // 0: false, 1: true
-	busyTriggerChan        chan NoneType
-	idleTriggerChan        chan NoneType
 	finalizers             []func()
 	finalizersMutex        sync.Mutex
 
@@ -128,9 +123,6 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 	session := &Session{
 		conn:               conn,
 		establishedStreams: make(map[uint32]*Stream, 64),
-
-		busyTriggerChan: make(chan NoneType),
-		idleTriggerChan: make(chan NoneType),
 		readyWriteChan:  make(chan *Frame),
 		readyAcceptChan: make(chan *Frame),
 		err:             nil,
@@ -230,41 +222,6 @@ func (session *Session) CloseWithErr(err error) { // todo no use of this func
 	_ = session.Close()
 }
 
-func (session *Session) IsBusy() bool {
-	return atomic.LoadInt32(&session.busyFlag) == 0
-}
-
-func (session *Session) BusyTrigger() <-chan NoneType {
-	return session.busyTriggerChan
-}
-
-func (session *Session) IdleTrigger() <-chan NoneType {
-	return session.idleTriggerChan
-}
-
-// todo remove this feature
-func (session *Session) acquireBusyFlag() {
-	select {
-	case session.busyTriggerChan <- NoneType{}:
-	default:
-		// do nothing
-	}
-
-	atomic.AddInt32(&session.busyFlag, 1)
-}
-
-// todo remove this feature
-func (session *Session) releaseBusyFlag() {
-	atomic.AddInt32(&session.busyFlag, -1)
-	if atomic.LoadInt32(&session.busyFlag) <= 0 {
-		select {
-		case session.idleTriggerChan <- NoneType{}:
-		default:
-			// do nothing
-		}
-	}
-}
-
 func (session *Session) recvLoop() {
 	buffer := session.bufferAlloc(session.bufferSize)
 	defer session.bufferRecycle(buffer)
@@ -285,8 +242,6 @@ func (session *Session) recvLoop() {
 			session.CloseWithErr(ErrSessionTTLExceed)
 			return
 		default:
-			session.acquireBusyFlag()
-			// 首先处理 header
 			n, err := session.conn.Read(buffer[:headerSize])
 			if err != nil {
 				session.CloseWithErr(fmt.Errorf("session.recvLoop read header error: %w", err))
@@ -411,8 +366,6 @@ func (session *Session) recvLoop() {
 				start := time.UnixMilli(int64(unixMilli))
 				rttDuration.Observe(time.Since(start).Seconds())
 			}
-
-			session.releaseBusyFlag()
 		}
 	}
 }
@@ -427,8 +380,6 @@ func (session *Session) sendLoop() {
 			return
 		case frame := <-session.readyWriteChan:
 			startTimestamp := time.Now()
-			session.acquireBusyFlag()
-
 			// write header
 			n, err := frame.MarshalHeader(buffer)
 			if err != nil {
@@ -452,7 +403,6 @@ func (session *Session) sendLoop() {
 			frame.Close() // flag current frame as sent
 
 			sendFrameDuration.Observe(time.Since(startTimestamp).Seconds())
-			session.releaseBusyFlag()
 		}
 	}
 }
