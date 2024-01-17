@@ -381,7 +381,7 @@ func (session *Session) sendLoop() {
 		case frame := <-session.readyWriteChan:
 			startTimestamp := time.Now()
 			// write header
-			n, err := frame.MarshalHeader(buffer)
+			n, err := frame.MarshalHeader(buffer[:session.bufferSize])
 			if err != nil {
 				session.CloseWithErr(err)
 				return
