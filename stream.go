@@ -8,8 +8,7 @@ import (
 )
 
 var (
-	ErrStreamClosed      = errors.New("stream has been closed")
-	ErrReadBufferLimited = errors.New("read buffer limited")
+	ErrStreamClosed = errors.New("stream has been closed")
 )
 
 type Stream struct {
@@ -28,6 +27,17 @@ func (stream *Stream) Done() <-chan struct{} {
 }
 
 func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, error) {
+	// split buffer if it's too large
+	if len(buffer) > maxPayloadSize {
+		n, err := stream.WriteContext(ctx, buffer[:maxPayloadSize])
+		if err != nil {
+			return 0, err
+		}
+
+		m, err := stream.WriteContext(ctx, buffer[maxPayloadSize:])
+		return n + m, err
+	}
+
 	frame := NewFrameContext(stream.ctx, cmdPsh, stream.id, buffer)
 	select {
 	case <-ctx.Done():
@@ -107,6 +117,13 @@ func (stream *Stream) IsClose() bool {
 	}
 }
 
+// silenceClose negative close, don't need to notify remote
+func (stream *Stream) silenceClose() {
+	stream.cancel()
+	_ = stream.session.unregisterStream(stream)
+}
+
+// Close positive close, need to notify remote
 func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
 	streamLifetimeDurationSummary.Observe(stream.Lifetime().Seconds())
 

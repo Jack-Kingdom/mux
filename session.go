@@ -44,8 +44,9 @@ type Session struct {
 	establishedStreams     map[uint32]*Stream
 	establishedStreamMutex sync.Mutex
 	streamIdCounter        uint32
-	finalizers             []func()
-	finalizersMutex        sync.Mutex
+
+	finalizers      []func() // todo it's too complicated, simplify it
+	finalizersMutex sync.Mutex
 
 	readyWriteChan  chan *Frame // chan Frame send to remote
 	readyAcceptChan chan *Frame // chan Frame ready accept
@@ -123,11 +124,11 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 	session := &Session{
 		conn:               conn,
 		establishedStreams: make(map[uint32]*Stream, 64),
-		readyWriteChan:  make(chan *Frame),
-		readyAcceptChan: make(chan *Frame),
-		err:             nil,
-		ctx:             currentCtx,
-		cancel:          cancel,
+		readyWriteChan:     make(chan *Frame),
+		readyAcceptChan:    make(chan *Frame),
+		err:                nil,
+		ctx:                currentCtx,
+		cancel:             cancel,
 
 		role:              RoleClient,
 		heartBeatSwitch:   false,
@@ -217,7 +218,7 @@ func (session *Session) Err() error {
 	return session.err
 }
 
-func (session *Session) CloseWithErr(err error) { // todo no use of this func
+func (session *Session) CloseWithErr(err error) { // todo remove this method
 	session.err = err
 	_ = session.Close()
 }
@@ -275,10 +276,9 @@ func (session *Session) recvLoop() {
 			case cmdPsh:
 				stream, err := session.getStream(header.streamId)
 				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
-					// 此处没有拿到 stream，可能被关闭了，主动关闭连接时需通知远程进行关闭，此处读取剩余的数据包并丢弃
-
+					// stream not found, perhaps this stream has been closed. just read and discard it
 					for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
-						n, err = session.conn.Read(buffer[:header.dataLength])
+						n, err = session.conn.Read(buffer[:session.bufferSize])
 						if err != nil {
 							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 							return
@@ -291,16 +291,16 @@ func (session *Session) recvLoop() {
 					return
 				}
 
-				// 这个地方可能存在队头阻塞的问题，先加入 metrics 进行监控
-				start := time.Now()
+				startReceiveDataTimestamp := time.Now()
+			startReceiveData:
+
 				select {
 				case <-session.ctx.Done():
 					return
 				case <-stream.ctx.Done():
-					// 当前 stream 被关闭了，读取剩下的数据包并丢弃
-
+					// this stream has been closed, just read and discard it
 					for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
-						n, err = session.conn.Read(buffer[:header.dataLength])
+						n, err = session.conn.Read(buffer[:session.bufferSize])
 						if err != nil {
 							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 							return
@@ -308,34 +308,41 @@ func (session *Session) recvLoop() {
 					}
 					continue
 				case dataFrame := <-stream.readyReadChan:
-					dispatchFrameDuration.Observe(time.Since(start).Seconds())
+					dispatchFrameDuration.Observe(time.Since(startReceiveDataTimestamp).Seconds())
 
-					// 注意这个地方需要处理拆包和粘包的问题
+					// receive buffer less than dataLength, just fill this buffer first and read again
 					if len(dataFrame.payload) < int(header.dataLength) {
-						session.CloseWithErr(BufferSizeLimitErr)
-						return
+						dataFrame.dataLength = uint16(len(dataFrame.payload))
+						for hasRead := 0; hasRead < int(dataFrame.dataLength); hasRead += n {
+							n, err = session.conn.Read(dataFrame.payload[hasRead:dataFrame.dataLength])
+							if err != nil {
+								session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+								return
+							}
+						}
+						dataFrame.Close()
+
+						header.dataLength -= dataFrame.dataLength
+						goto startReceiveData // read again
 					}
 
 					dataFrame.dataLength = header.dataLength
 					for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
 						n, err = session.conn.Read(dataFrame.payload[hasRead:header.dataLength])
 						if err != nil {
-							dataFrame.Close()
 							session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
 							return
 						}
 					}
-					dataFrame.Close() //读取完成后关闭此 frame
+					dataFrame.Close()
 				}
-			case cmdFin: // 收到远程的关闭通知，被动关闭
+			case cmdFin:
 				stream, err := session.getStream(header.streamId)
 				if err != nil && errors.Is(err, ErrStreamIdNotFound) {
-					// 这个 stream 可能已经被关闭了,直接返回就可以了
+					// stream not found, perhaps this stream has been closed. ignore it
 					continue
 				}
-				// 被动关闭，不需要通知 remote
-				stream.cancel()
-				_ = session.unregisterStream(stream)
+				stream.silenceClose()
 			case cmdPing:
 				ttlTicker.Reset(session.heartBeatTTL) // receive heartbeat, reset ttlTicker
 
@@ -365,6 +372,9 @@ func (session *Session) recvLoop() {
 				unixMilli := binary.BigEndian.Uint64(buffer[:heartBeatPayloadSize])
 				start := time.UnixMilli(int64(unixMilli))
 				rttDuration.Observe(time.Since(start).Seconds())
+			default:
+				session.CloseWithErr(UnknownCmdErr)
+				return
 			}
 		}
 	}
@@ -499,7 +509,7 @@ func (session *Session) OpenStream(ctx context.Context) (*Stream, error) {
 		return nil, session.ctx.Err()
 	case session.readyWriteChan <- frame:
 		select {
-		case <-ctx.Done(): // 注意：存在 syn 发送，server 创建 stream 但 client 却没有创建的情况
+		case <-ctx.Done(): // todo: bug? Syn sent to remote, but ctx is done, server created stream, but client not
 			return nil, ctx.Err()
 		case <-session.ctx.Done():
 			return nil, session.ctx.Err()

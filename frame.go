@@ -26,6 +26,10 @@ const (
 	headerSize     = sizeOfCmd + sizeOfStreamId + sizeOfLength
 )
 
+const (
+	maxPayloadSize = 0xFFFF
+)
+
 var (
 	BufferSizeLimitErr = errors.New("buffer size limit err")
 	UnknownCmdErr      = errors.New("cmd unknown err")
