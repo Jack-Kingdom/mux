@@ -3,6 +3,7 @@ package mux
 import (
 	"context"
 	"errors"
+	"go.uber.org/zap"
 	"net"
 	"time"
 )
@@ -29,6 +30,7 @@ func (stream *Stream) Done() <-chan struct{} {
 func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, error) {
 	// split buffer if it's too large
 	if len(buffer) > maxPayloadSize {
+		zap.L().Warn("steam write frame payload too large", zap.Int("len", len(buffer)), zap.Int("limit", maxPayloadSize))
 		n, err := stream.WriteContext(ctx, buffer[:maxPayloadSize])
 		if err != nil {
 			return 0, err
@@ -38,6 +40,7 @@ func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, err
 		return n + m, err
 	}
 
+	defer observe(stream.session.writeFrameDurations, time.Now())
 	frame := NewFrameContext(stream.ctx, cmdPsh, stream.id, buffer)
 	select {
 	case <-ctx.Done():
@@ -124,9 +127,7 @@ func (stream *Stream) silenceClose() {
 }
 
 // Close positive close, need to notify remote
-func (stream *Stream) Close() error { // 主动关闭，需要通知 remote
-	streamLifetimeDurationSummary.Observe(stream.Lifetime().Seconds())
-
+func (stream *Stream) Close() error {
 	err := stream.session.unregisterStream(stream)
 	if err != nil {
 		return err

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
+	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,7 @@ var (
 	ErrSessionTTLExceed = errors.New("session ttl exceed")
 	ErrStreamIdDup      = errors.New("stream id duplicated err")
 	ErrStreamIdNotFound = errors.New("stream id not found")
+	ErrBufferLimited    = errors.New("buffer length limited")
 )
 
 type roleType uint8
@@ -62,11 +65,17 @@ type Session struct {
 	heartBeatSwitch   bool
 	heartBeatInterval time.Duration
 	heartBeatTTL      time.Duration
+	heartBeatRtt      time.Duration // todo this variable not use at now
 
-	// session buffer config
+	// buffer config
 	bufferSize    int
 	bufferAlloc   BufferAllocFunc
 	bufferRecycle BufferRecycleFunc
+
+	// metrics
+	writeFrameDurations   prometheus.Histogram
+	recvFrameDurations    prometheus.Histogram
+	acceptStreamDurations prometheus.Histogram
 
 	// private variable
 	createdAt time.Time
@@ -117,6 +126,21 @@ func WithBufferManager(allocFunc BufferAllocFunc, recycleFunc BufferRecycleFunc)
 		session.bufferAlloc = allocFunc
 		session.bufferRecycle = recycleFunc
 	}
+}
+
+func WithMetrics(writeFrameDurations, recvFrameDurations, acceptStreamDurations prometheus.Histogram) Option {
+	return func(session *Session) {
+		session.writeFrameDurations = writeFrameDurations
+		session.recvFrameDurations = recvFrameDurations
+		session.acceptStreamDurations = acceptStreamDurations
+	}
+}
+
+func observe(metrics prometheus.Histogram, start time.Time) {
+	if metrics == nil {
+		return
+	}
+	metrics.Observe(time.Since(start).Seconds())
 }
 
 func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...Option) *Session {
@@ -177,7 +201,6 @@ func (session *Session) Ctx() context.Context {
 	return session.ctx
 }
 
-// Lifetime 用以获取当前 session 的存在时间
 func (session *Session) Lifetime() time.Duration {
 	return time.Since(session.createdAt)
 }
@@ -208,9 +231,7 @@ func (session *Session) Close() error {
 	session.cancel()
 	_ = session.conn.Close()
 
-	sessionLifetimeDurationSummary.Observe(session.Lifetime().Seconds())
 	session.finalize()
-
 	return session.err
 }
 
@@ -312,6 +333,7 @@ func (session *Session) recvLoop() {
 
 					// receive buffer less than dataLength, just fill this buffer first and read again
 					if len(dataFrame.payload) < int(header.dataLength) {
+						zap.L().Warn("receive frame payload larger than stream buffer", zap.Uint16("frame-length", header.dataLength), zap.Uint16("buffer-length", dataFrame.dataLength))
 						dataFrame.dataLength = uint16(len(dataFrame.payload))
 						for hasRead := 0; hasRead < int(dataFrame.dataLength); hasRead += n {
 							n, err = session.conn.Read(dataFrame.payload[hasRead:dataFrame.dataLength])
@@ -346,13 +368,12 @@ func (session *Session) recvLoop() {
 			case cmdPing:
 				ttlTicker.Reset(session.heartBeatTTL) // receive heartbeat, reset ttlTicker
 
-				for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
-					n, err = session.conn.Read(buffer[hasRead:header.dataLength])
-					if err != nil {
-						session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
-						return
-					}
+				err = readUtilLength(session.conn, buffer, int(header.dataLength))
+				if err != nil {
+					session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+					return
 				}
+
 				frame := NewFrameContext(session.ctx, cmdPong, 0, buffer[:header.dataLength])
 				session.readyWriteChan <- frame
 			case cmdPong:
@@ -361,17 +382,15 @@ func (session *Session) recvLoop() {
 					return
 				}
 
-				for hasRead := 0; hasRead < int(header.dataLength); hasRead += n {
-					n, err = session.conn.Read(buffer[hasRead:header.dataLength])
-					if err != nil {
-						session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
-						return
-					}
+				err = readUtilLength(session.conn, buffer, int(header.dataLength))
+				if err != nil {
+					session.CloseWithErr(fmt.Errorf("session.recvLoop read data error: %w", err))
+					return
 				}
 
 				unixMilli := binary.BigEndian.Uint64(buffer[:heartBeatPayloadSize])
 				start := time.UnixMilli(int64(unixMilli))
-				rttDuration.Observe(time.Since(start).Seconds())
+				session.heartBeatRtt = time.Since(start)
 			default:
 				session.CloseWithErr(UnknownCmdErr)
 				return
@@ -389,7 +408,6 @@ func (session *Session) sendLoop() {
 		case <-session.ctx.Done():
 			return
 		case frame := <-session.readyWriteChan:
-			startTimestamp := time.Now()
 			// write header
 			n, err := frame.MarshalHeader(buffer[:session.bufferSize])
 			if err != nil {
@@ -411,17 +429,12 @@ func (session *Session) sendLoop() {
 				}
 			}
 			frame.Close() // flag current frame as sent
-
-			sendFrameDuration.Observe(time.Since(startTimestamp).Seconds())
 		}
 	}
 }
 
 const (
 	heartBeatPayloadSize = 8
-	sRttSmoothingFactor  = 0.125
-	rttVarBeta           = 0.25
-	rtoK                 = 4
 )
 
 func (session *Session) heartBeatLoop() {
@@ -539,4 +552,20 @@ func (session *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 		frame.Close()
 		return stream, nil
 	}
+}
+
+func readUtilLength(conn io.ReadWriteCloser, buf []byte, length int) error {
+	if len(buf) < length {
+		return ErrBufferLimited
+	}
+
+	var n int
+	var err error
+	for hasRead := 0; hasRead < length; hasRead += n {
+		n, err = conn.Read(buf[hasRead:length])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
