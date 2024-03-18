@@ -3,7 +3,7 @@ package mux
 import (
 	"context"
 	"errors"
-	"go.uber.org/zap"
+	"fmt"
 	"net"
 	"time"
 )
@@ -30,7 +30,7 @@ func (stream *Stream) Done() <-chan struct{} {
 func (stream *Stream) WriteContext(ctx context.Context, buffer []byte) (int, error) {
 	// split buffer if it's too large
 	if len(buffer) > maxPayloadSize {
-		zap.L().Warn("steam write frame payload too large", zap.Int("len", len(buffer)), zap.Int("limit", maxPayloadSize))
+		stream.session.logger.Warnf(fmt.Sprintf("steam write frame payload too large, split it, len: %d, max: %d", len(buffer), maxPayloadSize))
 		n, err := stream.WriteContext(ctx, buffer[:maxPayloadSize])
 		if err != nil {
 			return 0, err

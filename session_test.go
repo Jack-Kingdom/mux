@@ -1,17 +1,60 @@
-package mux
+package mux_test
 
 import (
 	"context"
-	dsaIo "github.com/Jack-Kingdom/go-dsa/io"
-	"go.uber.org/zap"
+	"github.com/Jack-Kingdom/mux"
 	"io"
 	"log"
+	"net"
 	"net/http"
-	_ "net/http/pprof"
 	"sync"
 	"testing"
 	"time"
 )
+
+// MemoryConnType In-memory connection, used for testing
+type MemoryConnType struct {
+	reader *io.PipeReader
+	writer *io.PipeWriter
+}
+
+func (conn *MemoryConnType) Read(b []byte) (int, error) {
+	return conn.reader.Read(b)
+}
+
+func (conn *MemoryConnType) Write(b []byte) (int, error) {
+	return conn.writer.Write(b)
+}
+
+func (conn *MemoryConnType) Close() error {
+	return conn.writer.Close()
+}
+
+func (conn *MemoryConnType) LocalAddr() net.Addr {
+	return &net.UnixAddr{Name: "memory", Net: "memory"}
+}
+
+func (conn *MemoryConnType) RemoteAddr() net.Addr {
+	return &net.UnixAddr{Name: "memory", Net: "memory"}
+}
+
+func (conn *MemoryConnType) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (conn *MemoryConnType) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (conn *MemoryConnType) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+func NewMemoryConnPeer() (*MemoryConnType, *MemoryConnType) {
+	clientReader, serverWriter := io.Pipe()
+	serverReader, clientWriter := io.Pipe()
+	return &MemoryConnType{clientReader, clientWriter}, &MemoryConnType{serverReader, serverWriter}
+}
 
 const (
 	bufferLength = 8 * 1024
@@ -24,9 +67,6 @@ var (
 )
 
 func TestSession(t *testing.T) {
-	logger, _ := zap.NewDevelopment()
-	zap.ReplaceGlobals(logger)
-
 	go func() {
 		log.Println(http.ListenAndServe(":6060", nil))
 	}()
@@ -34,12 +74,12 @@ func TestSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.TODO(), 5*time.Second)
 	defer cancel()
 
-	client, server := dsaIo.NewMemoryConnPeer()
+	client, server := NewMemoryConnPeer()
 	defer client.Close()
 	defer server.Close()
 
 	go func() {
-		serverSession := NewSession(server, WithRole(RoleServer), WithBufferSize(bufferLength), WithHeartBeatTTL(5*time.Second))
+		serverSession := mux.NewSession(server, mux.WithRole(mux.RoleServer), mux.WithBufferSize(bufferLength), mux.WithHeartBeatTTL(5*time.Second))
 
 		for {
 			stream, err := serverSession.AcceptStream(ctx)
@@ -47,28 +87,28 @@ func TestSession(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			t.Logf("stream %d accept.", stream.id)
+			t.Logf("stream accept.")
 
-			buffer := serverSession.bufferAlloc(bufferLength)
+			buffer := make([]byte, bufferLength)
 			n, err := stream.Read(buffer)
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			t.Logf("server stream %d read: %s", stream.id, buffer[:n])
+			t.Logf("server stream read: %s", buffer[:n])
 
 			_, err = stream.Write(buffer[:n])
 			if err != nil {
 				t.Error(err)
 				return
 			}
-			t.Logf("server stream %d write: %s", stream.id, buffer[:n])
+			t.Logf("server stream write: %s", buffer[:n])
 
 			//_ = stream.Close()
 		}
 	}()
 
-	clientSession := NewSession(client, WithRole(RoleClient), WithBufferSize(bufferLength), WithHeartBeatSwitch(true), WithHeartBeatInterval(2*time.Second))
+	clientSession := mux.NewSession(client, mux.WithRole(mux.RoleClient), mux.WithBufferSize(bufferLength), mux.WithHeartBeatSwitch(true), mux.WithHeartBeatInterval(2*time.Second))
 
 	for i := 0; i < 4; i++ {
 		stream, err := clientSession.OpenStream(ctx)
@@ -76,14 +116,14 @@ func TestSession(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		t.Logf("client stream %d opened.", stream.id)
+		t.Logf("client stream opened.")
 
 		_, err = stream.Write([]byte(testPayload))
 		if err != nil {
 			t.Error(err)
 			return
 		}
-		t.Logf("client stream %d write: %s", stream.id, testPayload)
+		t.Logf("client stream write: %s", testPayload)
 
 		buffer := make([]byte, bufferLength)
 		n, err := stream.Read(buffer)
@@ -91,7 +131,7 @@ func TestSession(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		t.Logf("client stream %d read: %s", stream.id, buffer[:n])
+		t.Logf("client stream read: %s", buffer[:n])
 
 		_ = stream.Close()
 	}
@@ -138,11 +178,11 @@ func BenchmarkSession(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.ReportAllocs()
 
-		client, server := dsaIo.NewMemoryConnPeer()
+		client, server := NewMemoryConnPeer()
 		ctx, cancel := context.WithTimeout(context.TODO(), time.Second)
 
-		clientSession := NewSession(client, WithRole(RoleClient), WithBufferSize(bufferLength))
-		serverSession := NewSession(server, WithRole(RoleServer), WithBufferSize(bufferLength))
+		clientSession := mux.NewSession(client, mux.WithRole(mux.RoleClient), mux.WithBufferSize(bufferLength))
+		serverSession := mux.NewSession(server, mux.WithRole(mux.RoleServer), mux.WithBufferSize(bufferLength))
 
 		clientStream, err := clientSession.OpenStream(ctx)
 		if err != nil {

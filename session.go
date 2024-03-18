@@ -5,9 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	dsaBuffer "github.com/Jack-Kingdom/go-dsa/buffer"
 	"github.com/prometheus/client_golang/prometheus"
-	"go.uber.org/zap"
 	"io"
 	"sync"
 	"sync/atomic"
@@ -59,7 +57,8 @@ type Session struct {
 	cancel context.CancelFunc
 
 	// session config
-	role roleType
+	role   roleType
+	logger Logger
 
 	// heartbeat config
 	heartBeatSwitch   bool
@@ -136,6 +135,12 @@ func WithMetrics(writeFrameDurations, recvFrameDurations, acceptStreamDurations 
 	}
 }
 
+func WithLogger(logger Logger) Option {
+	return func(session *Session) {
+		session.logger = logger
+	}
+}
+
 func observe(metrics prometheus.Histogram, start time.Time) {
 	if metrics == nil {
 		return
@@ -166,9 +171,18 @@ func NewSessionContext(ctx context.Context, conn io.ReadWriteCloser, options ...
 		option(session)
 	}
 
+	if session.logger == nil {
+		session.logger = NoopLogger
+	}
+
 	if session.bufferAlloc == nil && session.bufferRecycle == nil {
-		session.bufferAlloc = dsaBuffer.Get
-		session.bufferRecycle = dsaBuffer.Put
+		session.bufferAlloc = func(size int) []byte {
+			session.logger.Warnf("bufferAlloc not set, specify alloc func for better performance")
+			return make([]byte, size)
+		}
+		session.bufferRecycle = func(buffer []byte) {
+			session.logger.Warnf("bufferRecycle not set, specify recycle func for better performance")
+		}
 	}
 
 	session.streamIdCounter = uint32(session.role) // 初始化 streamId 计数器
@@ -333,7 +347,7 @@ func (session *Session) recvLoop() {
 
 					// receive buffer less than dataLength, just fill this buffer first and read again
 					if len(dataFrame.payload) < int(header.dataLength) {
-						zap.L().Warn("receive frame payload larger than stream buffer", zap.Uint16("frame-length", header.dataLength), zap.Uint16("buffer-length", dataFrame.dataLength))
+						session.logger.Warnf(fmt.Sprintf("receive frame payload larger than stream buffer, frame-length:%d, buffer-length:%d", header.dataLength, len(dataFrame.payload)))
 						dataFrame.dataLength = uint16(len(dataFrame.payload))
 						for hasRead := 0; hasRead < int(dataFrame.dataLength); hasRead += n {
 							n, err = session.conn.Read(dataFrame.payload[hasRead:dataFrame.dataLength])
